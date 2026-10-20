@@ -16,9 +16,9 @@ class DeviceKeys {
     '${Platform.pathSeparator}.ssh',
   );
 
-  // Servers usually allow six attempts per connection; leave room for a
-  // password prompt after the keys.
-  static const _maxKeys = 5;
+  // Servers usually allow six attempts per connection; leave room for this
+  // device's Marsa key before these and a password prompt after.
+  static const _maxKeys = 4;
 
   // Passphrase-protected keys, unlocked for as long as the app runs so the
   // passphrase is asked once rather than on every connection.

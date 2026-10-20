@@ -10,6 +10,8 @@ import '../core/cloud.dart';
 import '../core/models.dart';
 import '../core/vault.dart';
 import 'connector.dart';
+import 'device_access.dart';
+import 'device_identity.dart';
 import 'device_keys.dart';
 import 'files.dart';
 import 'forwarding.dart';
@@ -284,11 +286,26 @@ enum Section { hosts, keychain, forwards, snippets, knownHosts, settings }
 /// Everything that lives while a vault is unlocked: open tabs, running
 /// forwards, transfers and which view is showing.
 class Workspace extends ChangeNotifier {
-  Workspace(this.vault, this.ui) : forwards = ForwardManager(vault, ui);
+  Workspace(this.vault, this.ui, {DeviceIdentity? device})
+    : forwards = ForwardManager(vault, ui),
+      devices = DeviceAccess(vault, device);
 
   final VaultSession vault;
   final Prompter ui;
   final ForwardManager forwards;
+
+  /// This device's own key and the other devices using the vault.
+  final DeviceAccess devices;
+
+  /// Registers this device and starts keeping the servers' keys up to date.
+  /// Not done in the constructor so tests and previews connect nowhere.
+  Future<void> startDevices() async {
+    onConnected = (v, host, conn) {
+      if (v == vault) devices.connected(host, conn);
+    };
+    await devices.start();
+  }
+
   final transfers = TransferManager();
 
   /// The "this computer" side of SFTP views.
@@ -439,6 +456,8 @@ class Workspace extends ChangeNotifier {
     layout = null;
     active = null;
     await forwards.stopAll();
+    onConnected = null;
+    devices.dispose();
     DeviceKeys.lock();
     Cloud.forgetSessions();
     await vault.lock();

@@ -9,17 +9,24 @@ import 'models.dart';
 import 'sync.dart';
 
 class VaultInfo {
-  VaultInfo(this.id, this.name, {this.remembered = false});
+  VaultInfo(this.id, this.name, {this.remembered = false, this.joined = false});
   final String id;
   String name;
 
   /// This device keeps the vault's key in the OS credential store, so it
   /// opens without the master password.
   bool remembered;
+
+  /// This device got the vault by joining it and has not yet asked to be
+  /// let in to its servers. A device that had the vault before devices were
+  /// tracked is trusted as it was; one that joins must be approved.
+  bool joined;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
     'remembered': remembered,
+    if (joined) 'joined': true,
   };
 }
 
@@ -66,6 +73,7 @@ class VaultRegistry extends ChangeNotifier {
             v['id'] as String,
             v['name'] as String,
             remembered: v['remembered'] as bool? ?? false,
+            joined: v['joined'] as bool? ?? false,
           ),
         );
       }
@@ -181,7 +189,7 @@ class VaultRegistry extends ChangeNotifier {
     }
     final s = VaultSession._(
       this,
-      VaultInfo(id, name),
+      VaultInfo(id, name, joined: true),
       env.kdf,
       key,
       VaultData()..load(body['data'] as Map<String, dynamic>),
@@ -192,6 +200,13 @@ class VaultRegistry extends ChangeNotifier {
     lastId = s.info.id;
     await _save();
     return s;
+  }
+
+  /// Records that this device has registered itself in the vault.
+  Future<void> registered(VaultInfo info) async {
+    if (!info.joined) return;
+    info.joined = false;
+    await _save();
   }
 
   Future<void> rename(VaultInfo info, String name) async {
@@ -246,6 +261,8 @@ class VaultSession extends ChangeNotifier {
   bool _closed = false;
 
   SyncConfig? get sync => _sync;
+
+  VaultRegistry get registry => _registry;
 
   /// Persists edits made to [data] and schedules a sync.
   Future<void> commit() async {

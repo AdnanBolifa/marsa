@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../core/importers.dart';
 import '../core/models.dart';
 import '../platform/sandbox.dart';
+import '../ssh/device_identity.dart';
 import '../ssh/device_keys.dart';
 import '../ssh/keys.dart';
 import '../ssh/sessions.dart';
@@ -795,7 +796,9 @@ class _HostDialogState extends State<_HostDialog> {
   // What the "Sign in with" menu shows: an identity id, or one of these.
   static const _device = '\u0000device';
   late String? _identityId = _h == null
-      ? (DeviceKeys.available ? _device : null)
+      ? (DeviceKeys.available || DeviceIdentity.current != null
+            ? _device
+            : null)
       : (_h.useDeviceKeys ? _device : _h.identityId);
   late String? _keyId = _h?.keyId;
   late String? _jumpId = _h?.jumpHostId;
@@ -855,7 +858,7 @@ class _HostDialogState extends State<_HostDialog> {
           ],
         ),
         choice<String>('Sign in with', _identityId, {
-          _device: 'This device\'s SSH keys (~/.ssh)',
+          _device: 'This device\'s own key',
           null: 'Password or a key from the keychain',
           for (final i in d.identities.all) i.id: 'Identity: ${i.title}',
         }, (v) => setState(() => _identityId = v)),
@@ -865,9 +868,12 @@ class _HostDialogState extends State<_HostDialog> {
             Sandbox.on && !DeviceKeys.available
                 ? 'Marsa cannot read your .ssh folder yet. Allow it once '
                       'under Settings → This Mac → SSH keys on this Mac.'
-                : 'Signs in with the keys already on whichever device is '
-                      'connecting, the same ones the ssh command uses. '
-                      'Nothing is copied into the vault.',
+                : 'Each device signs in with its own key, which never '
+                      'leaves it: Marsa adds the key of every device you '
+                      'approve to this server (Settings → Devices). The keys '
+                      'in ~/.ssh that the ssh command uses are tried too. '
+                      'If the server asks for a password the first time, '
+                      'type it once and the keys are added then.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),

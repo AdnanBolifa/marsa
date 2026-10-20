@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0
+
+### Device keys
+- Every computer now signs in with its own SSH key. The private key stays
+  in that computer's Keychain or Credential Manager; only the public key
+  syncs with the vault.
+- Setting up a new device no longer means copying keys around: join the
+  vault, then approve the new device on one that already has access. Marsa
+  adds its key to every server in the vault, in the background and over
+  any connection you open, and retries servers it cannot reach.
+- Settings → Devices lists every device with its key fingerprint and how
+  many servers have its key. Removing a device takes its key off every
+  server.
+- New hosts sign in with "this device's own key" by default; if a server
+  asks for a password the first time, type it once and the keys are added.
+- A device waiting for approval says so when a server turns it away.
+
 ## 0.4.2
 
 ### Terminal

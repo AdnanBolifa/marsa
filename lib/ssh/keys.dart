@@ -21,8 +21,12 @@ String _publicLine(SSHKeyPair kp, String comment) {
 String fingerprintOf(String publicLine) {
   final parts = publicLine.split(' ');
   if (parts.length < 2) return '';
-  final digest = SHA256Digest().process(base64.decode(parts[1]));
-  return 'SHA256:${base64.encode(digest).replaceAll('=', '')}';
+  try {
+    final digest = SHA256Digest().process(base64.decode(parts[1]));
+    return 'SHA256:${base64.encode(digest).replaceAll('=', '')}';
+  } on FormatException {
+    return '';
+  }
 }
 
 SshKey _record(String label, SSHKeyPair kp) => SshKey(

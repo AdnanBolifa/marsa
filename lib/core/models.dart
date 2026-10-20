@@ -250,6 +250,86 @@ class KnownHost extends Rec {
   Map<String, dynamic> fields() => {'type': type, 'fingerprint': fingerprint};
 }
 
+/// A computer that uses this vault, by the public half of its own SSH key.
+/// The private half never leaves that computer. Written only by the device
+/// itself, when it first opens the vault.
+class Device extends Rec {
+  Device({
+    required String id,
+    int? updatedAt,
+    this.name = '',
+    this.publicKey = '',
+  }) : super(id, updatedAt);
+
+  factory Device.fromJson(Map<String, dynamic> j) => Device(
+    id: j['id'] as String,
+    updatedAt: j['u'] as int,
+    name: j['name'] as String? ?? '',
+    publicKey: j['publicKey'] as String? ?? '',
+  );
+
+  String name;
+
+  /// OpenSSH `authorized_keys` line.
+  String publicKey;
+
+  String get title => name.isEmpty ? 'Unnamed device' : name;
+
+  @override
+  Map<String, dynamic> fields() => {'name': name, 'publicKey': publicKey};
+}
+
+/// Whether a [Device] may sign in to the vault's servers. No record means
+/// it is waiting for approval. Kept apart from [Device] so the device and
+/// the people approving it never overwrite each other's changes.
+class DeviceStatus extends Rec {
+  DeviceStatus({
+    required String id,
+    int? updatedAt,
+    this.approved = true,
+    this.by = '',
+  }) : super(id, updatedAt);
+
+  factory DeviceStatus.fromJson(Map<String, dynamic> j) => DeviceStatus(
+    id: j['id'] as String,
+    updatedAt: j['u'] as int,
+    approved: j['approved'] as bool? ?? false,
+    by: j['by'] as String? ?? '',
+  );
+
+  /// False once the device has been removed: its key comes off every
+  /// server and stays off.
+  bool approved;
+
+  /// Name of the device that made the decision.
+  String by;
+
+  @override
+  Map<String, dynamic> fields() => {'approved': approved, 'by': by};
+}
+
+/// A device's key is in a server's `authorized_keys`. One record per pair,
+/// with the id `device:host`, so devices installing keys at the same time
+/// cannot lose each other's progress.
+class DeviceInstall extends Rec {
+  DeviceInstall({required this.deviceId, required this.hostId, int? updatedAt})
+    : super(idFor(deviceId, hostId), updatedAt);
+
+  factory DeviceInstall.fromJson(Map<String, dynamic> j) => DeviceInstall(
+    deviceId: j['device'] as String,
+    hostId: j['host'] as String,
+    updatedAt: j['u'] as int,
+  );
+
+  static String idFor(String deviceId, String hostId) => '$deviceId:$hostId';
+
+  final String deviceId;
+  final String hostId;
+
+  @override
+  Map<String, dynamic> fields() => {'device': deviceId, 'host': hostId};
+}
+
 /// One collection of records plus the tombstones of deleted ones. Deleting
 /// drops the record body (so secrets do not linger) and keeps only its id and
 /// deletion time, which is what lets a delete win over a stale copy elsewhere.
@@ -271,6 +351,9 @@ class Table<T extends Rec> {
   void remove(String id) {
     if (_items.remove(id) != null) _tombs[id] = _after(id);
   }
+
+  /// Whether a record with this id existed and was deleted.
+  bool wasRemoved(String id) => _tombs.containsKey(id);
 
   // Strictly later than anything already recorded for this id, so a change
   // made here wins even if another device's clock runs ahead.
@@ -333,6 +416,9 @@ class VaultData {
   final snippets = Table<Snippet>(Snippet.fromJson);
   final forwards = Table<PortForward>(PortForward.fromJson);
   final knownHosts = Table<KnownHost>(KnownHost.fromJson);
+  final devices = Table<Device>(Device.fromJson);
+  final deviceStatus = Table<DeviceStatus>(DeviceStatus.fromJson);
+  final deviceInstalls = Table<DeviceInstall>(DeviceInstall.fromJson);
 
   Map<String, Table> get _tables => {
     'hosts': hosts,
@@ -341,6 +427,9 @@ class VaultData {
     'snippets': snippets,
     'forwards': forwards,
     'knownHosts': knownHosts,
+    'devices': devices,
+    'deviceStatus': deviceStatus,
+    'deviceInstalls': deviceInstalls,
   };
 
   void load(Map<String, dynamic> j) =>
@@ -350,12 +439,8 @@ class VaultData {
       _tables.map((name, t) => MapEntry(name, t.toJson()));
 
   void merge(VaultData other) {
-    hosts.merge(other.hosts);
-    keys.merge(other.keys);
-    identities.merge(other.identities);
-    snippets.merge(other.snippets);
-    forwards.merge(other.forwards);
-    knownHosts.merge(other.knownHosts);
+    final theirs = other._tables;
+    _tables.forEach((name, t) => t.merge(theirs[name]!));
   }
 
   Credentials credentialsFor(Host h) {

@@ -4,6 +4,7 @@ import 'package:dartssh2/dartssh2.dart';
 
 import '../core/models.dart';
 import '../core/vault.dart';
+import 'device_identity.dart';
 import 'device_keys.dart';
 
 /// Questions a connection may need answered by the person at the keyboard.
@@ -50,8 +51,45 @@ class Connection {
   }
 }
 
-Future<Connection> connect(VaultSession vault, Host host, Prompter ui) =>
-    _connect(vault, host, ui, {});
+/// Told about every connection the user opens, so the server can be
+/// brought up to date with the vault's device keys while it is reachable.
+void Function(VaultSession vault, Host host, Connection conn)? onConnected;
+
+Future<Connection> connect(
+  VaultSession vault,
+  Host host,
+  Prompter ui, {
+  bool announce = true,
+}) async {
+  final conn = await _connect(vault, host, ui, {});
+  if (announce) onConnected?.call(vault, host, conn);
+  return conn;
+}
+
+// This device's own key, once it is approved or already on the server.
+SSHKeyPair? _deviceKey(VaultData data, Host host) {
+  final me = DeviceIdentity.current;
+  if (me == null || data.devices[me.id] == null) return null;
+  final approved = data.deviceStatus[me.id]?.approved;
+  if (approved == false) return null;
+  final there = data.deviceInstalls[DeviceInstall.idFor(me.id, host.id)];
+  return approved == true || there != null ? me.pair : null;
+}
+
+/// Why this device cannot sign in yet, when the reason is that it is
+/// waiting to be let in.
+String? _waitingHint(VaultData data) {
+  final me = DeviceIdentity.current;
+  if (me == null || data.devices[me.id] == null) return null;
+  return switch (data.deviceStatus[me.id]?.approved) {
+    null =>
+      'This device is waiting to be approved. Open Marsa on a device that '
+          'already has access and approve "${me.name}"; it then adds this '
+          'device\'s key to your servers.',
+    false => 'This device was removed from the vault.',
+    true => null,
+  };
+}
 
 Future<Connection> _connect(
   VaultSession vault,
@@ -70,9 +108,17 @@ Future<Connection> _connect(
 
   // Read (and if needed unlock) the keys before opening the connection, so a
   // passphrase prompt cannot run into the server's login timeout.
+  final own = _deviceKey(vault.data, host);
   final identities = <SSHKeyPair>[
+    ?own,
     if (creds.key != null) ...SSHKeyPair.fromPem(creds.key!.privateKey),
-    if (host.useDeviceKeys) ...await DeviceKeys.load(ui),
+    // A device waiting for approval goes on without them: the server may
+    // still take a password, and otherwise it is told why it is turned away.
+    if (host.useDeviceKeys)
+      ...await _localKeys(
+        ui,
+        required: own == null && _waitingHint(vault.data) == null,
+      ),
   ];
 
   final parents = <SSHClient>[];
@@ -156,9 +202,27 @@ Future<Connection> _connect(
     }
     if (rejected != null) throw ConnectError(rejected!);
     if (e is SSHAuthError) {
-      throw ConnectError('Authentication failed for ${creds.username}@$where');
+      final hint = _waitingHint(vault.data);
+      throw ConnectError(
+        'Authentication failed for ${creds.username}@$where'
+        '${hint == null ? '' : '. $hint'}',
+      );
     }
     throw ConnectError('Connection to $where failed ($e)');
   }
   return Connection(client, parents);
+}
+
+// The keys in ~/.ssh. Without them a host can still be reached with this
+// device's Marsa key, so their absence only matters when there is none.
+Future<List<SSHKeyPair>> _localKeys(
+  Prompter ui, {
+  required bool required,
+}) async {
+  try {
+    return await DeviceKeys.load(ui);
+  } on ConnectError {
+    if (required) rethrow;
+    return const [];
+  }
 }

@@ -18,9 +18,13 @@ Android and iOS are planned on the same codebase.
 
 - **Hosts** with tags, search, jump hosts (ProxyJump) and quick connect by
   typing `user@host`. A row of **group and tag filters** above the list switches
-  between them in one click; drag a host onto a group to move it. A host can sign in with **this device's SSH keys**
-  (`~/.ssh/id_*`), used in place and never copied into the vault, so each
-  device connects with its own key.
+  between them in one click; drag a host onto a group to move it.
+- **Device keys**: every computer signs in with **its own SSH key**, which
+  never leaves it. Set up a new device by joining the vault, then approve it
+  once on a device that already has access: Marsa adds the new key to every
+  server in the vault for you, with no copying keys around. Removing a
+  lost device takes its key off every server. See
+  [How device keys work](#how-device-keys-work).
 - **Import** hosts from an OpenSSH config, a CSV (including the layout
   Termius uses for its own CSV import), a PuTTY registry export or, on
   Windows, PuTTY directly, and MobaXterm session files. The format is
@@ -84,6 +88,34 @@ enter the master password and point it at the same location. To avoid
 retyping the server details, use *Copy link* next to Sync in Settings on the
 first device and paste it into the join dialog; the link holds the location
 only, never a password or key.
+
+## How device keys work
+
+Each computer makes its own Ed25519 key the first time Marsa runs. The
+private key stays in that computer's Keychain or Credential Manager; only
+the public key goes into the vault, so nothing in the synced file can sign
+in anywhere.
+
+1. **Join the vault** on the new device (*Join a synced vault* on the
+   unlock screen). It asks to be let in and shows *waiting to be approved*.
+2. **Approve it** on a device that already has access. Marsa shows the
+   request above the tabs (and under Settings → Devices) with the new key's
+   fingerprint; approve only a device you just set up yourself.
+3. The approving device **adds the new key** to `~/.ssh/authorized_keys` on
+   every server in the vault, in the background, and to any server you
+   connect to later. Servers it cannot reach are retried every 15 minutes.
+4. The new device now signs in to all of them with its own key.
+
+**Removing a device** (Settings → Devices → Remove) takes its key off every
+server as soon as each can be reached. The removed device keeps its own copy
+of the vault, with any passwords saved in it, so after losing a device also
+change the master password.
+
+A device that already had the vault before this feature was added keeps
+the access it had. Until it is approved, a new device can still add its own
+key to servers it reaches with passwords or keys saved in the vault, since
+that gives it nothing it did not already have. Every device must run Marsa
+0.5 or later: older versions drop the device list when they sync.
 
 **Sharing with a team:** create a separate vault for shared servers, sync it
 somewhere the team can reach, and give teammates the location and the master
@@ -177,7 +209,10 @@ Per-device data is in the user's application-support directory
 - "Remember on this device" stores the vault key (not the password) in the
   OS credential store. Anyone who can use your signed-in OS account can then
   open the vault; leave it off on shared computers.
-- Device SSH keys are read from `~/.ssh` at connect time. A
+- Device keys are added to Linux, BSD and macOS servers (anything with a
+  POSIX shell and `~/.ssh/authorized_keys`). Windows OpenSSH servers are not
+  supported yet: their administrators' keys live in a different file.
+- Keys in `~/.ssh` are also read at connect time. A
   passphrase-protected key asks for its passphrase once per app run. Keys
   that live only in an agent or on a hardware token are not supported.
 - Anyone with the master password and access to the sync location can read the

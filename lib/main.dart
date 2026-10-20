@@ -7,6 +7,7 @@ import 'core/cloud.dart';
 import 'core/vault.dart';
 import 'platform/keystore.dart';
 import 'platform/sandbox.dart';
+import 'ssh/device_identity.dart';
 import 'ssh/device_keys.dart';
 import 'ssh/sessions.dart';
 import 'ui/common.dart';
@@ -22,6 +23,7 @@ Future<void> main() async {
     keyStore: SystemKeyStore(),
   );
   await registry.load();
+  DeviceIdentity.current = await DeviceIdentity.load(SystemSecretStore());
   final settings = AppSettings(File('${dir.path}/settings.json'));
   await settings.load();
   if (Sandbox.on) {
@@ -75,7 +77,11 @@ class _MarsaAppState extends State<MarsaApp> {
               registry: widget.registry,
               autoUnlock: _launch,
               onUnlocked: (vault) => setState(
-                () => _workspace = Workspace(vault, DialogPrompter()),
+                () => _workspace = Workspace(
+                  vault,
+                  DialogPrompter(),
+                  device: DeviceIdentity.current,
+                )..startDevices(),
               ),
             )
           : AppShell(
