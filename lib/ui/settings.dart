@@ -7,10 +7,11 @@ import '../platform/sandbox.dart';
 import '../ssh/device_keys.dart';
 import '../ssh/sessions.dart';
 import 'common.dart';
+import 'devices.dart';
 import 'sync_dialog.dart';
 import 'theme.dart';
 
-const appVersion = '0.4.2';
+const appVersion = '0.5.0';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({
@@ -366,6 +367,13 @@ class SettingsPage extends StatelessWidget {
                         ),
                       ),
                     ]),
+                    ListenableBuilder(
+                      listenable: workspace.devices,
+                      builder: (context, _) => section(
+                        'Devices',
+                        deviceRows(context, workspace, row),
+                      ),
+                    ),
                     if (Sandbox.on)
                       section('This Mac', [
                         row(

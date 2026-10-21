@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../core/vault.dart';
+import '../ssh/device_identity.dart';
 
 /// Keeps remembered vault keys in the macOS Keychain or the Windows
 /// Credential Manager, where they are tied to the signed-in OS user.
@@ -29,4 +30,14 @@ class SystemKeyStore implements KeyStore {
 
   @override
   Future<void> delete(String vaultId) => _storage.delete(key: _name(vaultId));
+}
+
+/// The same OS credential store, for this device's own SSH key.
+class SystemSecretStore implements SecretStore {
+  @override
+  Future<String?> read(String name) => SystemKeyStore._storage.read(key: name);
+
+  @override
+  Future<void> write(String name, String value) =>
+      SystemKeyStore._storage.write(key: name, value: value);
 }

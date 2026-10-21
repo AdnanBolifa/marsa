@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/vault.dart';
 import '../ssh/sessions.dart';
 import 'common.dart';
+import 'devices.dart';
 import 'hosts.dart';
 import 'keychain.dart';
 import 'pages.dart';
@@ -65,7 +66,12 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([workspace, workspace.vault, registry]),
+    listenable: Listenable.merge([
+      workspace,
+      workspace.vault,
+      workspace.devices,
+      registry,
+    ]),
     builder: (context, _) {
       final ws = workspace;
       final compact = MediaQuery.sizeOf(context).width < 820;
@@ -78,6 +84,7 @@ class AppShell extends StatelessWidget {
               Expanded(
                 child: Column(
                   children: [
+                    DeviceBanner(ws),
                     if (ws.tabs.isNotEmpty) _TabStrip(ws),
                     Expanded(
                       child: IndexedStack(

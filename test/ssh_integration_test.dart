@@ -154,6 +154,9 @@ void main() {
     if (!available) return;
     await vault.lock();
     server.kill();
+    // sshd removes its pid file as it exits; deleting the folder before
+    // then can trip over the file vanishing mid-delete.
+    await server.exitCode;
     await tmp.delete(recursive: true);
   });
 
