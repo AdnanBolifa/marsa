@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1
+
+### Terminal
+- Selecting text by dragging past the top or bottom edge of the terminal
+  scrolls it, faster the further past the edge the mouse is, so selections
+  can be longer than the screen.
+
+### Mac App Store edition
+- When no SSH key can be read, the message says to allow access to the
+  .ssh folder in Settings → This Mac, which the sandbox requires.
+
 ## 0.5.0
 
 ### Device keys

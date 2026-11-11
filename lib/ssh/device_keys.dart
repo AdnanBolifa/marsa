@@ -3,6 +3,7 @@ import 'dart:isolate';
 
 import 'package:dartssh2/dartssh2.dart';
 
+import '../platform/sandbox.dart';
 import 'connector.dart';
 
 /// The SSH keys already on this computer (`~/.ssh/id_*`), used in place for
@@ -75,7 +76,9 @@ class DeviceKeys {
     }
     if (out.isEmpty) {
       throw ConnectError(
-        'No usable SSH key found in ${directory.path} on this device',
+        'No usable SSH key found in ${directory.path} on this device'
+        '${Sandbox.on ? '. To use the keys in your .ssh folder, choose '
+                  'Allow access in Settings → This Mac' : ''}',
       );
     }
     return out;
