@@ -3,7 +3,10 @@
 # confined to Apple's sandbox, packaged as dist/Marsa-appstore.pkg ready to
 # upload. See docs/app-store.md for the one-time setup this expects.
 #
-#   tool/build_appstore.sh path/to/Marsa_AppStore.provisionprofile
+#   tool/build_appstore.sh path/to/Marsa_AppStore.provisionprofile [STORE_VERSION]
+#
+# STORE_VERSION (e.g. 1.0.1) replaces the version shown on the store, which
+# must keep rising past what the store already has; pubspec.yaml keeps its own.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,6 +31,7 @@ PKG_CERT="$(identity '3rd Party Mac Developer Installer')"
 echo "Signing as: $APP_CERT"
 
 DEFINES=(); [ -f cloud_keys.json ] && DEFINES=(--dart-define-from-file=cloud_keys.json)
+[ -n "${2:-}" ] && DEFINES+=(--build-name="$2")
 flutter build macos --release ${DEFINES[@]+"${DEFINES[@]}"}
 
 OUT=dist/appstore; rm -rf "$OUT"; mkdir -p "$OUT"

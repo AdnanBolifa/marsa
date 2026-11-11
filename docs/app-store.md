@@ -42,7 +42,12 @@ App Store Connect under the app's *TestFlight* tab and can be selected for
 the version being submitted.
 
 Each upload needs a higher build number: the part after `+` in `version:` in
-`pubspec.yaml`.
+`pubspec.yaml`. The store's version number must also be higher than the one
+already live there (1.0 went out first), so pass it as a second argument:
+
+```sh
+tool/build_appstore.sh ~/Downloads/Marsa_App_Store.provisionprofile 1.0.1
+```
 
 ## Store listing
 

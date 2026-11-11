@@ -118,6 +118,78 @@ void main() {
     await tester.runAsync(vault.lock);
   });
 
+  testWidgets('dragging a selection past the edge scrolls and extends it', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final registry = VaultRegistry(tmp);
+    final vault = (await tester.runAsync(() async {
+      await registry.load();
+      return registry.create('T', 'password-1');
+    }))!;
+    final host = Host(address: 'web-01');
+    vault.data.hosts.put(host);
+    final settings = AppSettings(File('${tmp.path}/settings.json'));
+    final ws = Workspace(vault, DialogPrompter());
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: navigatorKey,
+        theme: buildTheme(Brightness.dark),
+        home: AppShell(
+          workspace: ws,
+          registry: registry,
+          settings: settings,
+          onLock: () async {},
+        ),
+      ),
+    );
+    final term = TerminalTab(host, vault, ws.ui);
+    for (var i = 0; i < 300; i++) {
+      term.terminal.write('line $i\r\n');
+    }
+    ws
+      ..add(term)
+      ..focus(term);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // From the last full line, up past the top edge, then hold.
+    final view = tester.getRect(find.byType(TerminalView));
+    final from = view.bottomLeft + const Offset(13, -40);
+    final gesture = await tester.startGesture(
+      from,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 20));
+    await gesture.moveTo(from - const Offset(0, 30));
+    await tester.pump(const Duration(milliseconds: 20));
+    final start = term.controller.selection!.begin;
+    for (var i = 1; i <= 10; i++) {
+      await gesture.moveTo(Offset(from.dx + 30, view.top + 20 - i * 30.0));
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    // Moving while scrolled must keep the start where it was.
+    await gesture.moveTo(Offset(from.dx + 20, view.top - 200));
+    await tester.pump(const Duration(milliseconds: 20));
+    await gesture.up();
+    await tester.pump();
+
+    final selection = term.controller.selection!;
+    expect(selection.begin, start);
+    // Reaches well beyond what was on screen when the drag started.
+    final lines = selection.begin.y - selection.end.y;
+    expect(lines, greaterThan(view.height ~/ 20 + 20));
+
+    ws.closeTab(term);
+    await tester.pumpAndSettle();
+    await tester.runAsync(vault.lock);
+  });
+
   test('Enter on an ended session connects again', () async {
     final reg = VaultRegistry(tmp);
     await reg.load();

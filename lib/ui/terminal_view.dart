@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
@@ -24,6 +26,91 @@ class TerminalTabView extends StatefulWidget {
 
 class _TerminalTabViewState extends State<TerminalTabView> {
   TerminalTab get _tab => widget.tab;
+
+  final _viewKey = GlobalKey<TerminalViewState>();
+  final _scroll = ScrollController();
+  // Dragging a selection past the top or bottom edge scrolls the view while
+  // the pointer stays there. The package keeps the drag start in pixels, so
+  // once the view has scrolled the selection's fixed end is held here.
+  Timer? _autoScroll;
+  Offset _pointer = Offset.zero;
+  CellOffset? _anchor;
+
+  @override
+  void dispose() {
+    _autoScroll?.cancel();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _onPointerMove(PointerMoveEvent e) {
+    if (e.kind != PointerDeviceKind.mouse ||
+        e.buttons != kPrimaryMouseButton ||
+        _tab.controller.selection == null) {
+      return;
+    }
+    _pointer = e.position;
+    // After the package's own drag handling, which runs after this listener.
+    if (_anchor != null) scheduleMicrotask(_extendSelection);
+    final box = _viewKey.currentState?.renderTerminal;
+    if (box == null || !box.hasSize) return;
+    final y = box.globalToLocal(e.position).dy;
+    final outside = y < 0 || y >= box.size.height;
+    if (outside) {
+      _autoScroll ??= Timer.periodic(
+        const Duration(milliseconds: 50),
+        (_) => _scrollStep(),
+      );
+    } else {
+      _autoScroll?.cancel();
+      _autoScroll = null;
+    }
+  }
+
+  void _endDrag(PointerEvent _) {
+    _autoScroll?.cancel();
+    _autoScroll = null;
+    _anchor = null;
+  }
+
+  void _scrollStep() {
+    final box = _viewKey.currentState?.renderTerminal;
+    final selection = _tab.controller.selection;
+    if (box == null || selection == null || !_scroll.hasClients) return;
+    final y = box.globalToLocal(_pointer).dy;
+    final below = y >= box.size.height;
+    // The selection's begin is where the drag started, whichever way it goes.
+    _anchor ??= selection.begin;
+    // Faster the further past the edge the pointer is, up to 5 lines a step.
+    final past = below ? y - box.size.height : -y;
+    final lines = (1 + past ~/ box.lineHeight).clamp(1, 5);
+    final p = _scroll.position;
+    _scroll.jumpTo(
+      (p.pixels + (below ? 1 : -1) * lines * box.lineHeight).clamp(
+        p.minScrollExtent,
+        p.maxScrollExtent,
+      ),
+    );
+    _extendSelection();
+  }
+
+  void _extendSelection() {
+    final box = _viewKey.currentState?.renderTerminal;
+    final from = _anchor;
+    if (box == null || from == null) return;
+    final local = box.globalToLocal(_pointer);
+    var to = box.getCellOffset(
+      Offset(local.dx, local.dy.clamp(0, box.size.height - 1)),
+    );
+    // As the package does: a forward selection includes the cell under the
+    // pointer.
+    if (to.x >= from.x) to = CellOffset(to.x + 1, to.y);
+    final buffer = _tab.terminal.buffer;
+    _tab.controller.setSelection(
+      buffer.createAnchorFromOffset(from),
+      buffer.createAnchorFromOffset(to),
+    );
+  }
 
   @override
   void initState() {
@@ -84,20 +171,29 @@ class _TerminalTabViewState extends State<TerminalTabView> {
           child: Column(
             children: [
               Expanded(
-                child: TerminalView(
-                  _tab.terminal,
-                  controller: _tab.controller,
-                  focusNode: _tab.focusNode,
-                  // The package's text-input path is refused by Flutter on
-                  // Windows (it attaches without a view), so nothing typed
-                  // arrives. Reading key presses directly works everywhere
-                  // except for macOS input methods, which keep the text path.
-                  hardwareKeyboardOnly: !Platform.isMacOS,
-                  theme: theme,
-                  textStyle: TerminalStyle(fontSize: widget.settings.fontSize),
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                  onSecondaryTapDown: (_, _) => _copyOrPaste(),
-                  onKeyEvent: _onKey,
+                child: Listener(
+                  onPointerMove: _onPointerMove,
+                  onPointerUp: _endDrag,
+                  onPointerCancel: _endDrag,
+                  child: TerminalView(
+                    _tab.terminal,
+                    key: _viewKey,
+                    scrollController: _scroll,
+                    controller: _tab.controller,
+                    focusNode: _tab.focusNode,
+                    // The package's text-input path is refused by Flutter on
+                    // Windows (it attaches without a view), so nothing typed
+                    // arrives. Reading key presses directly works everywhere
+                    // except for macOS input methods, which keep the text path.
+                    hardwareKeyboardOnly: !Platform.isMacOS,
+                    theme: theme,
+                    textStyle: TerminalStyle(
+                      fontSize: widget.settings.fontSize,
+                    ),
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                    onSecondaryTapDown: (_, _) => _copyOrPaste(),
+                    onKeyEvent: _onKey,
+                  ),
                 ),
               ),
               if (_tab.state == TabState.closed)
