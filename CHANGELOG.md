@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+The same app as 0.5.1, renumbered so the version matches the Mac App
+Store, where 1.0 was already published.
+
 ## 0.5.1
 
 ### Terminal
