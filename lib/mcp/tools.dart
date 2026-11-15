@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import '../core/models.dart';
 import '../core/vault.dart';
 import '../ssh/connector.dart';
+import '../ssh/file_sync.dart';
 import '../ssh/files.dart';
 import 'audit.dart';
 import 'auth.dart';
@@ -201,6 +202,40 @@ class McpToolRegistry {
         'additionalProperties': false,
       },
     ),
+    _ToolSpec(
+      name: 'sftp_sync',
+      description:
+          'Rsync-style directory synchronization between an allowed local folder and a saved host via SFTP.',
+      tier: McpPermissionTier.sftpRead,
+      inputSchema: {
+        'type': 'object',
+        'properties': {
+          'hostId': {'type': 'string', 'description': 'Target host UUID'},
+          'direction': {
+            'type': 'string',
+            'enum': ['push', 'pull'],
+            'description': 'push (local -> remote) or pull (remote -> local)',
+          },
+          'localPath': {'type': 'string', 'description': 'Local folder path'},
+          'remotePath': {'type': 'string', 'description': 'Remote folder path'},
+          'exclude': {
+            'type': 'array',
+            'items': {'type': 'string'},
+            'description': 'Optional glob patterns to exclude',
+          },
+          'dryRun': {
+            'type': 'boolean',
+            'description': 'Preview diff without transferring or deleting',
+          },
+          'delete': {
+            'type': 'boolean',
+            'description': 'Delete extra files in destination',
+          },
+        },
+        'required': ['hostId', 'direction', 'localPath', 'remotePath'],
+        'additionalProperties': false,
+      },
+    ),
   ];
 
   List<Map<String, dynamic>> listTools(McpAgentToken? agent) {
@@ -374,6 +409,24 @@ class McpToolRegistry {
             'Write ${utf8.encode(content).length} bytes to: $path',
           );
           result = await _sftpWrite(v, h, path, content);
+        case 'sftp_sync':
+          final id = _reqString(args, 'hostId');
+          final direction = _reqString(args, 'direction');
+          final localPath = _reqString(args, 'localPath');
+          final remotePath = _reqString(args, 'remotePath');
+          final (v, h) = _resolveHost(agent, id);
+          vaultId = v.info.id;
+          hostId = h.id;
+          hostLabel = h.title;
+          result = await _sftpSync(
+            agent,
+            v,
+            h,
+            direction: direction,
+            localPath: localPath,
+            remotePath: remotePath,
+            args: args,
+          );
         default:
           throw McpToolError('TOOL_NOT_FOUND', 'Unknown tool: $name');
       }
@@ -770,6 +823,83 @@ class McpToolRegistry {
         'path': path,
         'bytesWritten': bytes.length,
       };
+    } finally {
+      conn.close();
+    }
+  }
+
+  Future<Map<String, dynamic>> _sftpSync(
+    McpAgentToken agent,
+    VaultSession vault,
+    Host host, {
+    required String direction,
+    required String localPath,
+    required String remotePath,
+    required Map<String, dynamic> args,
+  }) async {
+    if (direction != 'push' && direction != 'pull') {
+      throw McpToolError(
+        'INVALID_PARAMS',
+        'direction must be "push" or "pull"',
+      );
+    }
+    final dryRun = args['dryRun'] as bool? ?? false;
+    final delete = args['delete'] as bool? ?? false;
+    if (!dryRun && (direction == 'push' || delete)) {
+      if (!agent.tier.allows(McpPermissionTier.sftpWrite)) {
+        throw McpToolError(
+          'PERMISSION_DENIED',
+          'Token tier "${agent.tier.name}" cannot perform sftp_sync push/delete',
+        );
+      }
+    }
+    if (!tokenStore.isLocalPathAllowed(agent, localPath)) {
+      throw McpToolError(
+        'PERMISSION_DENIED',
+        'Local path "$localPath" is not in allowedLocalPaths for agent "${agent.name}".',
+      );
+    }
+
+    final exclude = (args['exclude'] as List?)?.cast<String>() ??
+        const ['.git', 'node_modules', '.DS_Store'];
+    final options = SyncOptions(
+      exclude: exclude,
+      delete: delete,
+      dryRun: dryRun,
+    );
+
+    final conn = await connector(vault, host, _prompter());
+    try {
+      final sftp = await conn.client.sftp();
+      final remote = RemoteFiles(sftp, host.title);
+      final local = LocalFiles();
+      final src = direction == 'push' ? local : remote;
+      final dst = direction == 'push' ? remote : local;
+      final srcRoot = direction == 'push' ? localPath : remotePath;
+      final dstRoot = direction == 'push' ? remotePath : localPath;
+
+      final plan = await planSync(src, srcRoot, dst, dstRoot, options: options);
+      if (dryRun || plan.isEmpty) {
+        return SyncResult(
+          plan: plan,
+          dryRun: dryRun,
+          copiedCount: 0,
+          deletedCount: 0,
+          bytesTransferred: 0,
+        ).toJson();
+      }
+
+      await _requireConsent(
+        agent,
+        'sftp_sync',
+        host,
+        'Sync ($direction): $localPath <-> $remotePath '
+            '(+${plan.newCount} new, ~${plan.updateCount} updated, '
+            '-${plan.deleteCount} deleted, ${plan.totalBytes} bytes)',
+      );
+
+      final res = await executeSync(src, dst, plan);
+      return res.toJson();
     } finally {
       conn.close();
     }

@@ -44,6 +44,7 @@ class McpAgentToken {
     this.allowedVaultIds = const [],
     this.allowedHostIds = const [],
     this.allowedGroups = const [],
+    this.allowedLocalPaths = const [],
     this.requireApproval = true,
     required this.createdAt,
     this.revokedAt,
@@ -60,6 +61,8 @@ class McpAgentToken {
     allowedVaultIds: (j['allowedVaultIds'] as List? ?? const []).cast<String>(),
     allowedHostIds: (j['allowedHostIds'] as List? ?? const []).cast<String>(),
     allowedGroups: (j['allowedGroups'] as List? ?? const []).cast<String>(),
+    allowedLocalPaths:
+        (j['allowedLocalPaths'] as List? ?? const []).cast<String>(),
     requireApproval: j['requireApproval'] as bool? ?? true,
     createdAt: j['createdAt'] as int? ?? 0,
     revokedAt: j['revokedAt'] as int?,
@@ -72,6 +75,7 @@ class McpAgentToken {
   List<String> allowedVaultIds;
   List<String> allowedHostIds;
   List<String> allowedGroups;
+  List<String> allowedLocalPaths;
   bool requireApproval;
   final int createdAt;
   int? revokedAt;
@@ -86,6 +90,7 @@ class McpAgentToken {
     'allowedVaultIds': allowedVaultIds,
     'allowedHostIds': allowedHostIds,
     'allowedGroups': allowedGroups,
+    'allowedLocalPaths': allowedLocalPaths,
     'requireApproval': requireApproval,
     'createdAt': createdAt,
     if (revokedAt != null) 'revokedAt': revokedAt,
@@ -151,6 +156,7 @@ class McpTokenStore extends ChangeNotifier {
     List<String> allowedVaultIds = const [],
     List<String> allowedHostIds = const [],
     List<String> allowedGroups = const [],
+    List<String> allowedLocalPaths = const [],
     bool requireApproval = true,
   }) async {
     final raw = _randomToken();
@@ -162,6 +168,7 @@ class McpTokenStore extends ChangeNotifier {
       allowedVaultIds: List.unmodifiable(allowedVaultIds),
       allowedHostIds: List.unmodifiable(allowedHostIds),
       allowedGroups: List.unmodifiable(allowedGroups),
+      allowedLocalPaths: List.unmodifiable(allowedLocalPaths),
       requireApproval: requireApproval,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -229,6 +236,40 @@ class McpTokenStore extends ChangeNotifier {
       return false;
     }
     return true;
+  }
+
+  /// Checks whether [localPath] is inside one of [token.allowedLocalPaths] and
+  /// is not a sensitive system or SSH credential directory.
+  bool isLocalPathAllowed(McpAgentToken token, String localPath) {
+    if (token.allowedLocalPaths.isEmpty) return false;
+    final normTarget = _normalizePath(localPath);
+    if (normTarget.isEmpty) return false;
+
+    final segments = normTarget.split('/');
+    if (segments.contains('.ssh') ||
+        normTarget == '/etc' ||
+        normTarget.startsWith('/etc/') ||
+        normTarget == '/System' ||
+        normTarget.startsWith('/System/')) {
+      return false;
+    }
+
+    for (final rawRoot in token.allowedLocalPaths) {
+      final normRoot = _normalizePath(rawRoot);
+      if (normRoot.isEmpty) continue;
+      if (normTarget == normRoot || normTarget.startsWith('$normRoot/')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static String _normalizePath(String path) {
+    final resolved = Directory(path).absolute.uri.toFilePath();
+    final unified = resolved.replaceAll('\\', '/');
+    return unified.length > 1 && unified.endsWith('/')
+        ? unified.substring(0, unified.length - 1)
+        : unified;
   }
 
   static bool _constantTimeEquals(String a, String b) {

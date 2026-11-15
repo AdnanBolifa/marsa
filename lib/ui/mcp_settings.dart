@@ -52,16 +52,18 @@ class McpSettingsSection extends StatelessWidget {
 
   Future<void> _createToken(BuildContext context) async {
     final nameCtrl = TextEditingController(text: 'AI Agent');
+    final pathsCtrl = TextEditingController();
     var tier = McpPermissionTier.discover;
     var requireApproval = true;
 
-    final created = await showDialog<(String, McpPermissionTier, bool)?>(
+    final created =
+        await showDialog<(String, McpPermissionTier, bool, List<String>)?>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) => AlertDialog(
           title: const Text('New agent token'),
           content: SizedBox(
-            width: 400,
+            width: 420,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -86,6 +88,14 @@ class McpSettingsSection extends StatelessWidget {
                   },
                 ),
                 const SizedBox(height: 12),
+                TextField(
+                  controller: pathsCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Allowed local folders for sftp_sync (optional)',
+                    hintText: '/Users/you/Projects, /tmp/deploy',
+                  ),
+                ),
+                const SizedBox(height: 12),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Require approval per execution'),
@@ -104,10 +114,17 @@ class McpSettingsSection extends StatelessWidget {
               child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(
-                ctx,
-                (nameCtrl.text, tier, requireApproval),
-              ),
+              onPressed: () {
+                final paths = pathsCtrl.text
+                    .split(',')
+                    .map((s) => s.trim())
+                    .where((s) => s.isNotEmpty)
+                    .toList();
+                Navigator.pop(
+                  ctx,
+                  (nameCtrl.text, tier, requireApproval, paths),
+                );
+              },
               child: const Text('Create'),
             ),
           ],
@@ -115,12 +132,14 @@ class McpSettingsSection extends StatelessWidget {
       ),
     );
     nameCtrl.dispose();
+    pathsCtrl.dispose();
     if (created == null || !context.mounted) return;
 
     final (profile, rawToken) = await mcpService.tokenStore.createToken(
       name: created.$1,
       tier: created.$2,
       requireApproval: created.$3,
+      allowedLocalPaths: created.$4,
     );
     if (!context.mounted) return;
 
