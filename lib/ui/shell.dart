@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/vault.dart';
+import '../mcp/mcp_service.dart';
 import '../ssh/sessions.dart';
 import 'common.dart';
 import 'devices.dart';
@@ -27,11 +28,13 @@ class AppShell extends StatelessWidget {
     required this.registry,
     required this.settings,
     required this.onLock,
+    this.mcpService,
   });
   final Workspace workspace;
   final VaultRegistry registry;
   final AppSettings settings;
   final Future<void> Function() onLock;
+  final McpService? mcpService;
 
   Future<void> _lock(BuildContext context) async {
     final ws = workspace;
@@ -61,6 +64,7 @@ class AppShell extends StatelessWidget {
       registry: registry,
       settings: settings,
       onLock: onLock,
+      mcpService: mcpService,
     ),
   };
 
