@@ -9,6 +9,7 @@ import '../ssh/file_sync.dart';
 import '../ssh/files.dart';
 import 'audit.dart';
 import 'auth.dart';
+import 'executions.dart';
 import 'prompter.dart';
 
 typedef SshConnectorFn = Future<Connection> Function(
@@ -52,6 +53,7 @@ class McpToolRegistry {
     required this.tokenStore,
     required this.auditLog,
     required this.vaultsProvider,
+    this.executions,
     this.connector = connect,
     this.onConsent,
     this.prompterFactory,
@@ -60,6 +62,7 @@ class McpToolRegistry {
   final McpTokenStore tokenStore;
   final McpAuditLog auditLog;
   final List<VaultSession> Function() vaultsProvider;
+  final McpExecutionTracker? executions;
   final SshConnectorFn connector;
   McpConsentCallback? onConsent;
   Prompter Function()? prompterFactory;
@@ -362,7 +365,7 @@ class McpToolRegistry {
           hostId = h.id;
           hostLabel = h.title;
           await _requireConsent(agent, name, h, 'Run command: $cmd');
-          result = await _sshExec(v, h, cmd, args);
+          result = await _sshExec(agent, v, h, cmd, args);
         case 'sftp_list':
           final id = _reqString(args, 'hostId');
           final (v, h) = _resolveHost(agent, id);
@@ -640,6 +643,7 @@ class McpToolRegistry {
   Prompter _prompter() => prompterFactory?.call() ?? McpPrompter();
 
   Future<Map<String, dynamic>> _sshExec(
+    McpAgentToken agent,
     VaultSession vault,
     Host host,
     String command,
@@ -652,14 +656,41 @@ class McpToolRegistry {
             defaultMaxOutputBytes)
         .clamp(1024, maxAllowedOutputBytes);
 
-    final conn = await connector(vault, host, _prompter());
+    final exec = executions?.start(
+      agentId: agent.id,
+      agentName: agent.name,
+      hostId: host.id,
+      hostLabel: host.title,
+      command: command,
+    );
+
+    Connection? conn;
     try {
+      conn = await connector(vault, host, _prompter());
+      if (exec != null) {
+        executions?.attachKillHandler(exec.id, () async {
+          conn?.close();
+        });
+      }
       final session = await conn.client.execute(command);
+      if (exec != null) {
+        executions?.attachKillHandler(exec.id, () async {
+          session.close();
+          conn?.close();
+        });
+      }
       final stdoutBuf = BytesBuilder(copy: false);
       final stderrBuf = BytesBuilder(copy: false);
       var truncated = false;
 
-      void collect(BytesBuilder buf, Uint8List chunk) {
+      void collect(
+        BytesBuilder buf,
+        Uint8List chunk,
+        void Function(String)? stream,
+      ) {
+        if (stream != null && chunk.isNotEmpty) {
+          stream(utf8.decode(chunk, allowMalformed: true));
+        }
         final remaining = maxBytes - buf.length;
         if (remaining <= 0) {
           truncated = true;
@@ -673,12 +704,32 @@ class McpToolRegistry {
         }
       }
 
-      final outSub = session.stdout.listen((c) => collect(stdoutBuf, c));
-      final errSub = session.stderr.listen((c) => collect(stderrBuf, c));
+      final outSub = session.stdout.listen(
+        (c) => collect(
+          stdoutBuf,
+          c,
+          exec == null ? null : (s) => executions?.appendStdout(exec.id, s),
+        ),
+      );
+      final errSub = session.stderr.listen(
+        (c) => collect(
+          stderrBuf,
+          c,
+          exec == null ? null : (s) => executions?.appendStderr(exec.id, s),
+        ),
+      );
       try {
         await session.done.timeout(Duration(seconds: timeoutSec));
       } on TimeoutException {
         session.close();
+        if (exec != null) {
+          await executions?.finish(
+            exec.id,
+            status: McpExecutionStatus.timeout,
+            errorMessage: 'Command timed out after ${timeoutSec}s',
+            truncated: truncated,
+          );
+        }
         throw McpToolError(
           'TIMEOUT',
           'Command timed out after ${timeoutSec}s on ${host.title}',
@@ -688,15 +739,44 @@ class McpToolRegistry {
         await errSub.cancel();
       }
 
+      if (exec != null && exec.status == McpExecutionStatus.killed) {
+        throw McpToolError('CANCELLED', 'Execution stopped by user');
+      }
+
+      final exitCode = session.exitCode;
+      if (exec != null) {
+        await executions?.finish(
+          exec.id,
+          status: (exitCode == null || exitCode == 0)
+              ? McpExecutionStatus.ok
+              : McpExecutionStatus.error,
+          exitCode: exitCode,
+          truncated: truncated,
+        );
+      }
+
       return {
         'hostId': host.id,
-        'exitCode': session.exitCode,
+        'exitCode': exitCode,
         'stdout': utf8.decode(stdoutBuf.takeBytes(), allowMalformed: true),
         'stderr': utf8.decode(stderrBuf.takeBytes(), allowMalformed: true),
         'truncated': truncated,
       };
+    } on McpToolError {
+      rethrow;
+    } catch (e) {
+      if (exec != null) {
+        await executions?.finish(
+          exec.id,
+          status: exec.status == McpExecutionStatus.killed
+              ? McpExecutionStatus.killed
+              : McpExecutionStatus.error,
+          errorMessage: e.toString(),
+        );
+      }
+      rethrow;
     } finally {
-      conn.close();
+      conn?.close();
     }
   }
 

@@ -7,6 +7,7 @@ import '../core/vault.dart';
 import '../ssh/connector.dart';
 import 'audit.dart';
 import 'auth.dart';
+import 'executions.dart';
 import 'mcp_server.dart';
 import 'prompter.dart';
 import 'tools.dart';
@@ -20,11 +21,15 @@ class McpService extends ChangeNotifier {
     McpConsentCallback? onConsent,
     Prompter Function()? prompterFactory,
   }) : tokenStore = McpTokenStore(File('${dataDir.path}/mcp_tokens.json')),
-       auditLog = McpAuditLog(file: File('${dataDir.path}/mcp_audit.jsonl')) {
+       auditLog = McpAuditLog(file: File('${dataDir.path}/mcp_audit.jsonl')),
+       executions = McpExecutionTracker(
+         file: File('${dataDir.path}/mcp_executions.jsonl'),
+       ) {
     registry = McpToolRegistry(
       tokenStore: tokenStore,
       auditLog: auditLog,
       vaultsProvider: () => List.unmodifiable(_vaults.values),
+      executions: executions,
       onConsent: onConsent,
       prompterFactory: prompterFactory,
     );
@@ -32,10 +37,12 @@ class McpService extends ChangeNotifier {
     httpServer = McpHttpServer(mcpServer: mcpServer, tokenStore: tokenStore);
     tokenStore.addListener(notifyListeners);
     auditLog.addListener(notifyListeners);
+    executions.addListener(notifyListeners);
   }
 
   final McpTokenStore tokenStore;
   final McpAuditLog auditLog;
+  final McpExecutionTracker executions;
   late final McpToolRegistry registry;
   late final McpServer mcpServer;
   late final McpHttpServer httpServer;
@@ -50,6 +57,7 @@ class McpService extends ChangeNotifier {
   Future<void> init() async {
     await tokenStore.load();
     await auditLog.load();
+    await executions.load();
   }
 
   void attachVault(VaultSession vault) {

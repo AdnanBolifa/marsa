@@ -281,7 +281,15 @@ class TileSplit extends Tile {
   }
 }
 
-enum Section { hosts, keychain, forwards, snippets, knownHosts, settings }
+enum Section {
+  hosts,
+  keychain,
+  forwards,
+  snippets,
+  knownHosts,
+  agentTerminals,
+  settings,
+}
 
 /// Everything that lives while a vault is unlocked: open tabs, running
 /// forwards, transfers and which view is showing.
