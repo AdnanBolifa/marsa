@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../core/host_share.dart';
 import '../core/importers.dart';
 import '../core/models.dart';
 import '../platform/sandbox.dart';
@@ -225,6 +227,90 @@ class _HostsPageState extends State<HostsPage> {
     }
   }
 
+  Future<void> _shareHost(Host host) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _ShareHostDialog(host: host, data: _data),
+    );
+  }
+
+  Future<String?> _askSharePassphrase() async {
+    final ctrl = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Encrypted host bundle'),
+        content: SizedBox(
+          width: 360,
+          child: TextField(
+            controller: ctrl,
+            obscureText: true,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Share passphrase',
+              hintText: 'Enter the passphrase used to encrypt this link',
+            ),
+            onSubmitted: (v) => Navigator.pop(ctx, v),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text),
+            child: const Text('Decrypt'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    return result;
+  }
+
+  Future<void> _importSharedHost() async {
+    final bundle = await showDialog<SharedHostBundle>(
+      context: context,
+      builder: (_) => _ImportSharedHostDialog(
+        askPassphrase: _askSharePassphrase,
+      ),
+    );
+    if (bundle == null || bundle.hosts.isEmpty || !mounted) return;
+
+    final keyIdMap = <String, String>{};
+    for (final k in bundle.keys) {
+      final parts = k.publicKey.split(' ');
+      final same = parts.length > 1
+          ? _data.keys.all
+                .where((existing) {
+                  final ep = existing.publicKey.split(' ');
+                  return ep.length > 1 && ep[1] == parts[1];
+                })
+                .firstOrNull
+          : null;
+      if (same != null) {
+        keyIdMap[k.id] = same.id;
+      } else {
+        _data.keys.put(k);
+        keyIdMap[k.id] = k.id;
+      }
+    }
+    for (final h in bundle.hosts) {
+      if (h.keyId != null && keyIdMap.containsKey(h.keyId)) {
+        h.keyId = keyIdMap[h.keyId];
+      }
+      _data.hosts.put(h);
+    }
+    await widget.ws.vault.commit();
+    if (!mounted) return;
+    toast(
+      context,
+      'Imported ${bundle.hosts.length} shared host(s)'
+      '${bundle.missingJumpHost ? ' (jump host not included — re-link if needed)' : ''}',
+    );
+  }
+
   static final _adHoc = RegExp(r'^([^@\s]+)@([^\s:@]+)(?::(\d{1,5}))?$');
 
   /// A typed `user@host[:port]` that is not saved: connect to it directly.
@@ -320,6 +406,11 @@ class _HostsPageState extends State<HostsPage> {
               icon: const Icon(Icons.more_horiz, size: 18),
               onSelected: (f) => f(),
               itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: _importSharedHost,
+                  child: const Text('Import shared host…'),
+                ),
+                const PopupMenuDivider(),
                 PopupMenuItem(
                   value: () => _import(_pickImportFile),
                   child: const Text('Import from a file…'),
@@ -442,6 +533,7 @@ class _HostsPageState extends State<HostsPage> {
                                 onConnect: () => widget.ws.openTerminal(h),
                                 onSftp: () => widget.ws.openSftp(h),
                                 onEdit: () => _edit(h),
+                                onShare: () => _shareHost(h),
                                 onMove: () => _askGroup(h),
                                 onDelete: () => _delete(h),
                               );
@@ -635,12 +727,13 @@ class _HostCard extends StatelessWidget {
     required this.onConnect,
     required this.onSftp,
     required this.onEdit,
+    required this.onShare,
     required this.onMove,
     required this.onDelete,
   });
   final Host host;
   final String subtitle;
-  final VoidCallback onConnect, onSftp, onEdit, onMove, onDelete;
+  final VoidCallback onConnect, onSftp, onEdit, onShare, onMove, onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -755,6 +848,10 @@ class _HostCard extends StatelessWidget {
                 onSelected: (f) => f(),
                 itemBuilder: (_) => [
                   PopupMenuItem(value: onEdit, child: const Text('Edit')),
+                  PopupMenuItem(
+                    value: onShare,
+                    child: const Text('Share / Export…'),
+                  ),
                   PopupMenuItem(
                     value: onMove,
                     child: const Text('Move to group…'),
@@ -897,6 +994,406 @@ class _HostDialogState extends State<_HostDialog> {
           for (final h in d.hosts.all)
             if (h.id != _h?.id) h.id: h.title,
         }, (v) => setState(() => _jumpId = v)),
+      ],
+    );
+  }
+}
+
+enum _ShareFormat { encryptedLink, metadataJson, openSshConfig }
+
+class _ShareHostDialog extends StatefulWidget {
+  const _ShareHostDialog({required this.host, required this.data});
+  final Host host;
+  final VaultData data;
+
+  @override
+  State<_ShareHostDialog> createState() => _ShareHostDialogState();
+}
+
+class _ShareHostDialogState extends State<_ShareHostDialog> {
+  _ShareFormat _format = _ShareFormat.encryptedLink;
+  bool _includeCredentials = true;
+  bool _includeJumpHosts = true;
+  final _passphrase = TextEditingController();
+  String? _output;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshPlaintext();
+  }
+
+  @override
+  void dispose() {
+    _passphrase.dispose();
+    super.dispose();
+  }
+
+  void _refreshPlaintext() {
+    _error = null;
+    _output = switch (_format) {
+      _ShareFormat.encryptedLink => null,
+      _ShareFormat.metadataJson => exportMetadataJson(widget.host, widget.data),
+      _ShareFormat.openSshConfig => exportOpenSshConfig(
+        widget.host,
+        widget.data,
+      ),
+    };
+  }
+
+  Future<String?> _ensureOutput() async {
+    if (_format != _ShareFormat.encryptedLink) {
+      _refreshPlaintext();
+      return _output;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final out = await exportEncryptedBundle(
+        widget.host,
+        widget.data,
+        _passphrase.text,
+        includeCredentials: _includeCredentials,
+        includeJumpHosts: _includeJumpHosts,
+      );
+      if (mounted) {
+        setState(() {
+          _output = out;
+          _busy = false;
+        });
+      }
+      return out;
+    } on HostShareError catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.message;
+          _busy = false;
+        });
+      }
+      return null;
+    }
+  }
+
+  Future<void> _copy() async {
+    final out = await _ensureOutput();
+    if (out == null || !mounted) return;
+    await Clipboard.setData(ClipboardData(text: out));
+    if (!mounted) return;
+    toast(context, 'Copied shared host to clipboard');
+  }
+
+  Future<void> _saveToFile() async {
+    final out = await _ensureOutput();
+    if (out == null || !mounted) return;
+    final ext = switch (_format) {
+      _ShareFormat.encryptedLink => 'txt',
+      _ShareFormat.metadataJson => 'json',
+      _ShareFormat.openSshConfig => 'conf',
+    };
+    final safeName = widget.host.title
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9._-]+'), '-')
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    final uri = await FilePicker.saveFile(
+      dialogTitle: 'Export host',
+      fileName: '${safeName.isEmpty ? 'host' : safeName}.$ext',
+      bytes: Uint8List.fromList(utf8.encode(out)),
+    );
+    if (uri == null) return;
+    if (uri.isScheme('file')) {
+      await File.fromUri(uri).writeAsString(out);
+    }
+    if (!mounted) return;
+    toast(context, 'Saved to ${uri.toFilePath()}');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    return AlertDialog(
+      title: Text('Share "${widget.host.title}"'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SegmentedButton<_ShareFormat>(
+              segments: const [
+                ButtonSegment(
+                  value: _ShareFormat.encryptedLink,
+                  label: Text('Encrypted link'),
+                ),
+                ButtonSegment(
+                  value: _ShareFormat.metadataJson,
+                  label: Text('Metadata JSON'),
+                ),
+                ButtonSegment(
+                  value: _ShareFormat.openSshConfig,
+                  label: Text('OpenSSH'),
+                ),
+              ],
+              selected: {_format},
+              onSelectionChanged: (s) {
+                setState(() {
+                  _format = s.first;
+                  _refreshPlaintext();
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            if (_format == _ShareFormat.encryptedLink) ...[
+              TextField(
+                controller: _passphrase,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'One-time share passphrase',
+                  hintText: 'Minimum 4 characters',
+                ),
+              ),
+              const SizedBox(height: 6),
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: _includeCredentials,
+                onChanged: (v) =>
+                    setState(() => _includeCredentials = v ?? true),
+                title: const Text('Include credentials & SSH keys'),
+              ),
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: _includeJumpHosts,
+                onChanged: (v) => setState(() => _includeJumpHosts = v ?? true),
+                title: const Text('Include jump host chain'),
+              ),
+            ] else
+              Text(
+                'Metadata-only export. Passwords and private keys are never included.',
+                style: t.textTheme.bodySmall?.copyWith(
+                  color: t.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: TextStyle(color: t.colorScheme.error, fontSize: 12.5),
+              ),
+            ],
+            if (_output != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 160),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: t.colorScheme.surfaceContainerLowest,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: t.colorScheme.outlineVariant),
+                ),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    _output!,
+                    style: mono.copyWith(fontSize: 11.5),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _saveToFile,
+          icon: const Icon(Icons.save_alt, size: 16),
+          label: const Text('Save file…'),
+        ),
+        FilledButton.icon(
+          onPressed: _busy ? null : _copy,
+          icon: const Icon(Icons.copy, size: 16),
+          label: Text(
+            _format == _ShareFormat.encryptedLink
+                ? 'Generate & Copy'
+                : 'Copy',
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImportSharedHostDialog extends StatefulWidget {
+  const _ImportSharedHostDialog({required this.askPassphrase});
+  final Future<String?> Function() askPassphrase;
+
+  @override
+  State<_ImportSharedHostDialog> createState() =>
+      _ImportSharedHostDialogState();
+}
+
+class _ImportSharedHostDialogState extends State<_ImportSharedHostDialog> {
+  final _input = TextEditingController();
+  SharedHostBundle? _preview;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadFile() async {
+    final picked = await FilePicker.pickFile(
+      dialogTitle: 'Select shared host file',
+    );
+    if (picked?.path == null) return;
+    final raw = await File(picked!.path!).readAsString();
+    _input.text = raw;
+    await _parse();
+  }
+
+  Future<void> _parse() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+      _preview = null;
+    });
+    try {
+      final bundle = await parseSharedHost(
+        _input.text,
+        askPassphrase: widget.askPassphrase,
+      );
+      if (mounted) {
+        setState(() {
+          _preview = bundle;
+          _busy = false;
+        });
+      }
+    } on HostShareError catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.message;
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    return AlertDialog(
+      title: const Text('Import shared host'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _input,
+              maxLines: 5,
+              style: mono.copyWith(fontSize: 12),
+              decoration: const InputDecoration(
+                labelText: 'Paste marsa:// link, JSON, or OpenSSH config',
+                alignLabelWithHint: true,
+              ),
+              onChanged: (_) {
+                if (_preview != null || _error != null) {
+                  setState(() {
+                    _preview = null;
+                    _error = null;
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: _busy ? null : _loadFile,
+                  icon: const Icon(Icons.folder_open, size: 16),
+                  label: const Text('Load file…'),
+                ),
+                const Spacer(),
+                OutlinedButton(
+                  onPressed: _busy ? null : _parse,
+                  child: const Text('Preview'),
+                ),
+              ],
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: TextStyle(color: t.colorScheme.error, fontSize: 12.5),
+              ),
+            ],
+            if (_preview != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: t.colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Ready to import ${_preview!.hosts.length} host(s)'
+                      '${_preview!.keys.isNotEmpty ? ' and ${_preview!.keys.length} key(s)' : ''}',
+                      style: t.textTheme.labelLarge,
+                    ),
+                    const SizedBox(height: 4),
+                    for (final h in _preview!.hosts)
+                      Text(
+                        '• ${h.title} (${h.username.isEmpty ? '?' : h.username}@${h.address}:${h.port})',
+                        style: mono.copyWith(fontSize: 11.5),
+                      ),
+                    if (_preview!.missingJumpHost)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          'Note: Jump host was not included in this share.',
+                          style: TextStyle(
+                            color: t.colorScheme.tertiary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () async {
+                  if (_preview == null) await _parse();
+                  if (_preview != null && context.mounted) {
+                    Navigator.pop(context, _preview);
+                  }
+                },
+          child: const Text('Import'),
+        ),
       ],
     );
   }
