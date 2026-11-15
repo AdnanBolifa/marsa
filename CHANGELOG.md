@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.0
+
+### AI Agent Integration (MCP)
+- Added built-in MCP HTTP server (`http://127.0.0.1:47832/mcp`) with bearer-token
+  authentication, permission tiers, consent prompts, and JSONL audit logging.
+- Added `sftp_sync` MCP tool and SFTP UI Sync dialog for incremental,
+  checksum-verified directory synchronization with dry-run, exclude globs, and
+  optional delete-extra support.
+- Added the **Agent Terminals** sidenav tab (`lib/ui/agent_terminals.dart`) to
+  monitor live agent `ssh_exec` commands, stream `stdout`/`stderr` in real time,
+  stop/kill running commands, search persisted command history, and re-open
+  commands in a terminal tab.
+
+### Hosts
+- Added **Share / Export…** and **Import shared host…** supporting metadata-only
+  OpenSSH config / JSON exports as well as passphrase-encrypted `marsa://host/...`
+  share bundles (including optional credentials, SSH keys, and jump host chains).
+
 ## 1.0.1
 
 The same app as 0.5.1, renumbered so the version matches the Mac App

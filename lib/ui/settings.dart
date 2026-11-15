@@ -13,7 +13,7 @@ import 'mcp_settings.dart';
 import 'sync_dialog.dart';
 import 'theme.dart';
 
-const appVersion = '1.0.1';
+const appVersion = '1.1.0';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({
