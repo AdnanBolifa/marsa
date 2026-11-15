@@ -294,11 +294,10 @@ class _UnlockPageState extends State<UnlockPage> {
                             remembered
                                 ? 'Master password (not needed)'
                                 : 'Master password',
-                            TextField(
+                            SecretField(
                               controller: _password,
                               focusNode: _focus,
                               autofocus: true,
-                              obscureText: true,
                               enabled: !_working,
                               onSubmitted: (_) => _unlock(),
                             ),
