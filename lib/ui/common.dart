@@ -91,12 +91,17 @@ Future<List<String>?> promptFields(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: labeled(
                     labels[i],
-                    TextField(
-                      controller: ctrls[i],
-                      autofocus: i == 0,
-                      obscureText: obscure?[i] ?? false,
-                      onSubmitted: (_) => submit(),
-                    ),
+                    (obscure?[i] ?? false)
+                        ? SecretField(
+                            controller: ctrls[i],
+                            autofocus: i == 0,
+                            onSubmitted: (_) => submit(),
+                          )
+                        : TextField(
+                            controller: ctrls[i],
+                            autofocus: i == 0,
+                            onSubmitted: (_) => submit(),
+                          ),
                   ),
                 ),
             ],
@@ -263,9 +268,8 @@ Widget labeled(String label, Widget child) => Builder(
         padding: const EdgeInsets.only(left: 2, bottom: 5),
         child: Text(
           label,
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
+          style: Theme.of(context).textTheme.labelMedium
+              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
       ),
       child,
@@ -282,14 +286,76 @@ Widget field(
   bool code = false,
 }) => labeled(
   label,
-  TextField(
-    controller: c,
-    obscureText: obscure,
-    maxLines: lines,
-    style: code ? mono.copyWith(fontSize: 12.5) : null,
-    decoration: InputDecoration(hintText: hint),
-  ),
+  obscure
+      ? SecretField(controller: c, hint: hint)
+      : TextField(
+          controller: c,
+          maxLines: lines,
+          style: code ? mono.copyWith(fontSize: 12.5) : null,
+          decoration: InputDecoration(hintText: hint),
+        ),
 );
+
+/// A password input with buttons to show/hide the text and copy it.
+class SecretField extends StatefulWidget {
+  const SecretField({
+    super.key,
+    required this.controller,
+    this.hint,
+    this.focusNode,
+    this.autofocus = false,
+    this.enabled = true,
+    this.onSubmitted,
+  });
+
+  final TextEditingController controller;
+  final String? hint;
+  final FocusNode? focusNode;
+  final bool autofocus;
+  final bool enabled;
+  final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<SecretField> createState() => _SecretFieldState();
+}
+
+class _SecretFieldState extends State<SecretField> {
+  bool _shown = false;
+
+  @override
+  Widget build(BuildContext context) => TextField(
+    controller: widget.controller,
+    focusNode: widget.focusNode,
+    autofocus: widget.autofocus,
+    enabled: widget.enabled,
+    obscureText: !_shown,
+    onSubmitted: widget.onSubmitted,
+    decoration: InputDecoration(
+      hintText: widget.hint,
+      suffixIcon: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: _shown ? 'Hide' : 'Show',
+            iconSize: 18,
+            icon: Icon(_shown ? Icons.visibility_off : Icons.visibility),
+            onPressed: () => setState(() => _shown = !_shown),
+          ),
+          IconButton(
+            tooltip: 'Copy',
+            iconSize: 18,
+            icon: const Icon(Icons.copy),
+            onPressed: () {
+              if (widget.controller.text.isNotEmpty) {
+                copyText(context, widget.controller.text, 'Password');
+              }
+            },
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 /// A labelled dropdown.
 Widget choice<T>(
