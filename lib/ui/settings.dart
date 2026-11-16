@@ -3,15 +3,17 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../core/vault.dart';
+import '../mcp/mcp_service.dart';
 import '../platform/sandbox.dart';
 import '../ssh/device_keys.dart';
 import '../ssh/sessions.dart';
 import 'common.dart';
 import 'devices.dart';
+import 'mcp_settings.dart';
 import 'sync_dialog.dart';
 import 'theme.dart';
 
-const appVersion = '1.0.1';
+const appVersion = '1.3.0';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({
@@ -20,11 +22,13 @@ class SettingsPage extends StatelessWidget {
     required this.registry,
     required this.settings,
     required this.onLock,
+    this.mcpService,
   });
   final Workspace workspace;
   final VaultRegistry registry;
   final AppSettings settings;
   final Future<void> Function() onLock;
+  final McpService? mcpService;
 
   VaultSession get _vault => workspace.vault;
 
@@ -392,6 +396,11 @@ class SettingsPage extends StatelessWidget {
                           ),
                         ),
                       ]),
+                    if (mcpService != null)
+                      McpSettingsSection(
+                        mcpService: mcpService!,
+                        settings: settings,
+                      ),
                     section('About', [
                       row(
                         'Marsa $appVersion',

@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.3.0
+
+### AI Agent Integration (MCP)
+- Kept AI agent terminal tabs open and shared across `ssh_exec` calls via
+  `Workspace.openAgentTerminal` and `TerminalTab.run(...)`, preserving shell
+  state (`cd`, environment variables, virtualenvs) with sequential command
+  queuing, exit-code capture, timeout + Ctrl-C support, and an **Agent** tab
+  badge (`lib/ssh/sessions.dart`, `lib/ui/shell.dart`, `lib/mcp/tools.dart`).
+
+## 1.2.0
+
+### AI Agent Integration (MCP)
+- Added `create_snippet`, `list_port_forwards`, and `create_port_forward` MCP
+  tools so AI agents can save reusable command snippets and SSH port-forwarding
+  rules (`local`, `remote`, `dynamic`) directly into unlocked vaults.
+- Added token name editing and 3-level execution policies (`Deny`, `Ask`,
+  `Auto approve`) for MCP agent tokens (`lib/mcp/auth.dart`,
+  `lib/ui/mcp_settings.dart`).
+- Added **All / By token / By host** grouping, token/host filters, collapsible
+  group headers, and per-group history clearing in **Agent Terminals** and the
+  MCP Audit Log dialog.
+
+## 1.1.0
+
+### AI Agent Integration (MCP)
+- Added built-in MCP HTTP server (`http://127.0.0.1:47832/mcp`) with bearer-token
+  authentication, permission tiers, consent prompts, and JSONL audit logging.
+- Added `sftp_sync` MCP tool and SFTP UI Sync dialog for incremental,
+  checksum-verified directory synchronization with dry-run, exclude globs, and
+  optional delete-extra support.
+- Added the **Agent Terminals** sidenav tab (`lib/ui/agent_terminals.dart`) to
+  monitor live agent `ssh_exec` commands, stream `stdout`/`stderr` in real time,
+  stop/kill running commands, search persisted command history, and re-open
+  commands in a terminal tab.
+
+### Hosts
+- Added **Share / Export…** and **Import shared host…** supporting metadata-only
+  OpenSSH config / JSON exports as well as passphrase-encrypted `marsa://host/...`
+  share bundles (including optional credentials, SSH keys, and jump host chains).
+
 ## 1.0.1
 
 The same app as 0.5.1, renumbered so the version matches the Mac App

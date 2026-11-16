@@ -20,6 +20,10 @@ class AppSettings extends ChangeNotifier {
   /// so the keys in it can be read again after a restart.
   String sshFolder = '';
 
+  /// Local MCP service settings for AI agent credential brokering.
+  bool mcpEnabled = false;
+  int mcpPort = 47832;
+
   Future<void> load() async {
     if (!await _file.exists()) return;
     try {
@@ -31,6 +35,8 @@ class AppSettings extends ChangeNotifier {
       terminalTheme = j['terminalTheme'] as String? ?? 'auto';
       fontSize = (j['fontSize'] as num?)?.toDouble() ?? 13;
       sshFolder = j['sshFolder'] as String? ?? '';
+      mcpEnabled = j['mcpEnabled'] as bool? ?? false;
+      mcpPort = (j['mcpPort'] as num?)?.toInt() ?? 47832;
     } on FormatException {
       // A damaged preferences file just means defaults.
     }
@@ -45,6 +51,8 @@ class AppSettings extends ChangeNotifier {
         'terminalTheme': terminalTheme,
         'fontSize': fontSize,
         if (sshFolder.isNotEmpty) 'sshFolder': sshFolder,
+        if (mcpEnabled) 'mcpEnabled': mcpEnabled,
+        if (mcpPort != 47832) 'mcpPort': mcpPort,
       }),
     );
   }

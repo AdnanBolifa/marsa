@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../core/vault.dart';
+import '../mcp/mcp_service.dart';
 import '../ssh/sessions.dart';
+import 'agent_terminals.dart';
 import 'common.dart';
 import 'devices.dart';
 import 'hosts.dart';
@@ -18,6 +20,7 @@ const _sections = {
   Section.forwards: ('Port forwarding', Icons.swap_horiz),
   Section.snippets: ('Snippets', Icons.code),
   Section.knownHosts: ('Known hosts', Icons.verified_user_outlined),
+  Section.agentTerminals: ('Agent Terminals', Icons.smart_toy_outlined),
 };
 
 class AppShell extends StatelessWidget {
@@ -27,11 +30,13 @@ class AppShell extends StatelessWidget {
     required this.registry,
     required this.settings,
     required this.onLock,
+    this.mcpService,
   });
   final Workspace workspace;
   final VaultRegistry registry;
   final AppSettings settings;
   final Future<void> Function() onLock;
+  final McpService? mcpService;
 
   Future<void> _lock(BuildContext context) async {
     final ws = workspace;
@@ -56,11 +61,16 @@ class AppShell extends StatelessWidget {
     Section.forwards => ForwardsPage(workspace),
     Section.snippets => SnippetsPage(workspace),
     Section.knownHosts => KnownHostsPage(workspace),
+    Section.agentTerminals => AgentTerminalsPage(
+      workspace: workspace,
+      mcpService: mcpService,
+    ),
     Section.settings => SettingsPage(
       workspace: workspace,
       registry: registry,
       settings: settings,
       onLock: onLock,
+      mcpService: mcpService,
     ),
   };
 
@@ -71,6 +81,7 @@ class AppShell extends StatelessWidget {
       workspace.vault,
       workspace.devices,
       registry,
+      ?mcpService,
     ]),
     builder: (context, _) {
       final ws = workspace;
@@ -79,7 +90,12 @@ class AppShell extends StatelessWidget {
         body: SafeArea(
           child: Row(
             children: [
-              _Sidebar(ws, compact, () => _lock(context)),
+              _Sidebar(
+                ws,
+                compact,
+                () => _lock(context),
+                mcpService: mcpService,
+              ),
               const VerticalDivider(width: 1),
               Expanded(
                 child: Column(
@@ -599,6 +615,24 @@ class _Tab extends StatelessWidget {
                 ),
               ),
             ),
+            if (tab is TerminalTab && (tab as TerminalTab).isAgent) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: scheme.primary.withValues(alpha: .16),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'Agent',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.primary,
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(width: 6),
             Tooltip(
               message: 'Close',
@@ -716,20 +750,23 @@ class _SplitTab extends StatelessWidget {
 }
 
 class _Sidebar extends StatelessWidget {
-  const _Sidebar(this.ws, this.compact, this.onLock);
+  const _Sidebar(this.ws, this.compact, this.onLock, {this.mcpService});
   final Workspace ws;
   final bool compact;
   final VoidCallback onLock;
+  final McpService? mcpService;
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
     final scheme = t.colorScheme;
+    final activeAgents = mcpService?.executions.activeCount ?? 0;
     Widget item(Section s, String label, IconData icon) => _Item(
       icon: icon,
       label: label,
       compact: compact,
       selected: ws.active == null && ws.section == s,
+      badgeCount: s == Section.agentTerminals ? activeAgents : 0,
       onTap: () => ws.show(s),
     );
     return Container(
@@ -823,12 +860,14 @@ class _Item extends StatelessWidget {
     required this.compact,
     required this.selected,
     required this.onTap,
+    this.badgeCount = 0,
   });
   final IconData icon;
   final String label;
   final bool compact;
   final bool selected;
   final VoidCallback onTap;
+  final int badgeCount;
 
   @override
   Widget build(BuildContext context) {
@@ -870,6 +909,25 @@ class _Item extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (badgeCount > 0)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: scheme.primary,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '$badgeCount',
+                          style: TextStyle(
+                            color: scheme.onPrimary,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
                   ],
                 ],
               ),

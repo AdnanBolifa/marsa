@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../platform/sandbox.dart';
+import '../ssh/file_sync.dart';
 import '../ssh/files.dart';
 import '../ssh/sessions.dart';
 import 'common.dart';
@@ -145,6 +146,201 @@ class _SftpTabViewState extends State<SftpTabView> {
     to,
     to.path,
   );
+
+  Future<void> _syncAcross(PaneController from, PaneController to) async {
+    final excludeCtrl = TextEditingController(
+      text: '.git, node_modules, .DS_Store',
+    );
+    var deleteExtra = false;
+    SyncPlan? plan;
+    String? error;
+    var scanning = true;
+    var running = false;
+    var progressText = '';
+    double? progressValue;
+
+    List<String> parseExclude() => excludeCtrl.text
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
+    Future<void> scan(void Function(void Function()) setDlg) async {
+      setDlg(() {
+        scanning = true;
+        error = null;
+      });
+      try {
+        final p = await planSync(
+          from.backend,
+          from.path,
+          to.backend,
+          to.path,
+          options: SyncOptions(
+            exclude: parseExclude(),
+            delete: deleteExtra,
+            dryRun: true,
+          ),
+        );
+        setDlg(() {
+          plan = p;
+          scanning = false;
+        });
+      } catch (e) {
+        setDlg(() {
+          error = e.toString();
+          scanning = false;
+        });
+      }
+    }
+
+    var started = false;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) {
+          if (!started) {
+            started = true;
+            Future.microtask(() => scan(setDlg));
+          }
+          final p = plan;
+          return AlertDialog(
+            title: const Text('Sync folder'),
+            content: SizedBox(
+              width: 480,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'From: ${from.backend.label} (${from.path})\n'
+                    'To: ${to.backend.label} (${to.path})',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: excludeCtrl,
+                    enabled: !running,
+                    decoration: const InputDecoration(
+                      labelText: 'Exclude patterns (comma-separated)',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Delete extra files in destination'),
+                    value: deleteExtra,
+                    onChanged: running
+                        ? null
+                        : (v) {
+                            deleteExtra = v;
+                            scan(setDlg);
+                          },
+                  ),
+                  const SizedBox(height: 8),
+                  if (scanning)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 12),
+                          Text('Comparing folders...'),
+                        ],
+                      ),
+                    )
+                  else if (error != null)
+                    Text(
+                      error!,
+                      style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+                    )
+                  else if (p != null)
+                    Text(
+                      p.isEmpty
+                          ? 'Folders are already in sync.'
+                          : '+${p.newCount} new, ~${p.updateCount} updated, '
+                              '-${p.deleteCount} deleted (${_size(p.totalBytes)})',
+                    ),
+                  if (running) ...[
+                    const SizedBox(height: 12),
+                    LinearProgressIndicator(value: progressValue),
+                    if (progressText.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        progressText,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(ctx).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: running ? null : () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+              if (!running)
+                OutlinedButton(
+                  onPressed: scanning ? null : () => scan(setDlg),
+                  child: const Text('Refresh preview'),
+                ),
+              FilledButton(
+                onPressed: running || scanning || p == null || p.isEmpty
+                    ? null
+                    : () async {
+                        setDlg(() {
+                          running = true;
+                          error = null;
+                        });
+                        try {
+                          final res = await executeSync(
+                            from.backend,
+                            to.backend,
+                            p,
+                            onProgress: (done, total, rel) {
+                              if (!ctx.mounted) return;
+                              setDlg(() {
+                                progressValue = total == 0 ? 1 : done / total;
+                                progressText = rel;
+                              });
+                            },
+                          );
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            await to.open();
+                            if (mounted) {
+                              toast(
+                                context,
+                                'Synced ${res.copiedCount} file(s), '
+                                'deleted ${res.deletedCount} item(s)',
+                              );
+                            }
+                          }
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            setDlg(() {
+                              running = false;
+                              error = e.toString();
+                            });
+                          }
+                        }
+                      },
+                child: const Text('Sync now'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    excludeCtrl.dispose();
+  }
 
   /// Copies [items] from [from]'s folder into [dest] on [to]'s side.
   Future<void> _copy(
@@ -304,6 +500,7 @@ class _SftpTabViewState extends State<SftpTabView> {
         // the second.
         forward: i == 0,
         onSend: other == null ? null : () => _send(pane, other),
+        onSync: other == null ? null : () => _syncAcross(pane, other),
         onDrop: (drag, dest) => _drop(drag, pane, dest),
         roomy: width >= 440,
       );
@@ -402,6 +599,7 @@ class _Pane extends StatelessWidget {
     this.source, {
     required this.forward,
     required this.onSend,
+    this.onSync,
     required this.onDrop,
     required this.roomy,
   });
@@ -415,6 +613,7 @@ class _Pane extends StatelessWidget {
 
   /// Null while the other side has nothing to copy to.
   final VoidCallback? onSend;
+  final VoidCallback? onSync;
 
   /// Files dragged here, to land in the folder given.
   final void Function(FileDrag drag, String dest) onDrop;
@@ -622,6 +821,7 @@ class _Pane extends StatelessWidget {
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         children: [
+                          tool('Sync', onSync),
                           tool('New folder', () => _newFolder(context)),
                           tool(
                             'Rename',
