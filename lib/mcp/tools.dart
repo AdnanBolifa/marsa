@@ -119,6 +119,65 @@ class McpToolRegistry {
       inputSchema: {'type': 'object', 'properties': {}, 'additionalProperties': false},
     ),
     _ToolSpec(
+      name: 'create_snippet',
+      description: 'Create and save a reusable command snippet in an unlocked vault.',
+      tier: McpPermissionTier.sftpWrite,
+      inputSchema: {
+        'type': 'object',
+        'properties': {
+          'label': {'type': 'string', 'description': 'Snippet name/label'},
+          'command': {'type': 'string', 'description': 'Shell command text'},
+          'vaultId': {
+            'type': 'string',
+            'description': 'Target vault UUID (optional if only one allowed vault is unlocked)',
+          },
+        },
+        'required': ['label', 'command'],
+        'additionalProperties': false,
+      },
+    ),
+    _ToolSpec(
+      name: 'list_port_forwards',
+      description: 'List saved SSH port-forwarding rules from unlocked vaults.',
+      tier: McpPermissionTier.discover,
+      inputSchema: {'type': 'object', 'properties': {}, 'additionalProperties': false},
+    ),
+    _ToolSpec(
+      name: 'create_port_forward',
+      description: 'Create and save an SSH port-forwarding rule (local, remote, or dynamic SOCKS) for a saved host.',
+      tier: McpPermissionTier.sftpWrite,
+      inputSchema: {
+        'type': 'object',
+        'properties': {
+          'hostId': {'type': 'string', 'description': 'Target host UUID'},
+          'label': {'type': 'string', 'description': 'Optional rule label'},
+          'kind': {
+            'type': 'string',
+            'enum': ['local', 'remote', 'dynamic'],
+            'description': 'Forwarding type (default local)',
+          },
+          'bindHost': {
+            'type': 'string',
+            'description': 'Listening bind address (default 127.0.0.1)',
+          },
+          'bindPort': {
+            'type': 'integer',
+            'description': 'Listening port (1-65535)',
+          },
+          'destHost': {
+            'type': 'string',
+            'description': 'Destination host for local/remote forwards (default 127.0.0.1)',
+          },
+          'destPort': {
+            'type': 'integer',
+            'description': 'Destination port for local/remote forwards (1-65535)',
+          },
+        },
+        'required': ['hostId', 'bindPort'],
+        'additionalProperties': false,
+      },
+    ),
+    _ToolSpec(
       name: 'ssh_exec',
       description:
           'Execute a non-interactive command on a saved host using Marsa stored credentials.',
@@ -357,6 +416,17 @@ class McpToolRegistry {
           result = {'identities': _discoverIdentities(agent)};
         case 'list_snippets':
           result = {'snippets': _discoverSnippets(agent)};
+        case 'create_snippet':
+          final created = await _createSnippet(agent, args);
+          vaultId = created['vaultId'] as String?;
+          result = created;
+        case 'list_port_forwards':
+          result = {'forwards': _discoverPortForwards(agent)};
+        case 'create_port_forward':
+          final created = await _createPortForward(agent, args);
+          vaultId = created['vaultId'] as String?;
+          hostId = created['hostId'] as String?;
+          result = created;
         case 'ssh_exec':
           final id = _reqString(args, 'hostId');
           final cmd = _reqString(args, 'command');
@@ -615,29 +685,184 @@ class McpToolRegistry {
     String toolName,
     Host host,
     String summary,
+  ) => _requireConsentForTarget(agent, toolName, host.title, summary);
+
+  Future<void> _requireConsentForTarget(
+    McpAgentToken agent,
+    String toolName,
+    String targetLabel,
+    String summary,
   ) async {
     if (!agent.requireApproval) return;
     final cb = onConsent;
     if (cb == null) {
       throw McpToolError(
         'CONSENT_DENIED',
-        'Interactive approval is required for "$toolName" on "${host.title}", but no UI prompter is available.',
+        'Interactive approval is required for "$toolName" on "$targetLabel", but no UI prompter is available.',
       );
     }
     final approved = await cb(
       McpConsentRequest(
         agentName: agent.name,
         toolName: toolName,
-        hostLabel: host.title,
+        hostLabel: targetLabel,
         summary: summary,
       ),
     );
     if (!approved) {
       throw McpToolError(
         'CONSENT_DENIED',
-        'User denied "$toolName" on "${host.title}" for agent "${agent.name}".',
+        'User denied "$toolName" on "$targetLabel" for agent "${agent.name}".',
       );
     }
+  }
+
+  VaultSession _resolveVault(McpAgentToken agent, String? vaultId) {
+    final allowed = _unlockedVaults()
+        .where((v) => tokenStore.isVaultAllowed(agent, v.info.id))
+        .toList();
+    if (allowed.isEmpty) {
+      throw McpToolError(
+        'PERMISSION_DENIED',
+        'Agent "${agent.name}" has no access to any unlocked vault.',
+      );
+    }
+    final requested = vaultId?.trim();
+    if (requested != null && requested.isNotEmpty) {
+      for (final v in allowed) {
+        if (v.info.id == requested) return v;
+      }
+      throw McpToolError(
+        'VAULT_NOT_FOUND',
+        'Vault "$requested" is not unlocked or not allowed for agent "${agent.name}".',
+      );
+    }
+    if (allowed.length > 1) {
+      throw McpToolError(
+        'INVALID_ARGS',
+        'Multiple vaults are unlocked; specify "vaultId".',
+      );
+    }
+    return allowed.first;
+  }
+
+  Future<Map<String, dynamic>> _createSnippet(
+    McpAgentToken agent,
+    Map<String, dynamic> args,
+  ) async {
+    final label = _reqString(args, 'label');
+    final command = _reqString(args, 'command');
+    final v = _resolveVault(agent, args['vaultId'] as String?);
+    await _requireConsentForTarget(
+      agent,
+      'create_snippet',
+      v.info.name,
+      'Create snippet "$label": $command',
+    );
+    final snippet = Snippet(label: label, command: command);
+    v.data.snippets.put(snippet);
+    await v.commit();
+    return {
+      'id': snippet.id,
+      'vaultId': v.info.id,
+      'label': snippet.label,
+      'command': snippet.command,
+    };
+  }
+
+  List<Map<String, dynamic>> _discoverPortForwards(McpAgentToken agent) {
+    final out = <Map<String, dynamic>>[];
+    for (final v in _unlockedVaults()) {
+      if (!tokenStore.isVaultAllowed(agent, v.info.id)) continue;
+      for (final f in v.data.forwards.all) {
+        final host = v.data.hosts[f.hostId];
+        if (host != null && !tokenStore.isHostAllowed(agent, v.info.id, host)) {
+          continue;
+        }
+        out.add({
+          'id': f.id,
+          'vaultId': v.info.id,
+          'label': f.label,
+          'kind': f.kind.name,
+          'hostId': f.hostId,
+          'bindHost': f.bindHost,
+          'bindPort': f.bindPort,
+          'destHost': f.destHost,
+          'destPort': f.destPort,
+        });
+      }
+    }
+    return out;
+  }
+
+  Future<Map<String, dynamic>> _createPortForward(
+    McpAgentToken agent,
+    Map<String, dynamic> args,
+  ) async {
+    final hostId = _reqString(args, 'hostId');
+    final (v, h) = _resolveHost(agent, hostId);
+    final kindRaw = (args['kind'] as String?)?.trim().toLowerCase() ?? 'local';
+    final kind = switch (kindRaw) {
+      'local' => ForwardKind.local,
+      'remote' => ForwardKind.remote,
+      'dynamic' => ForwardKind.dynamic,
+      _ => throw McpToolError(
+        'INVALID_ARGS',
+        'Invalid forward kind "$kindRaw". Expected local, remote, or dynamic.',
+      ),
+    };
+    final bindPort = (args['bindPort'] as num?)?.toInt();
+    if (bindPort == null || bindPort < 1 || bindPort > 65535) {
+      throw McpToolError(
+        'INVALID_ARGS',
+        'Parameter "bindPort" must be an integer between 1 and 65535.',
+      );
+    }
+    final rawBindHost = (args['bindHost'] as String?)?.trim();
+    final bindHost = (rawBindHost == null || rawBindHost.isEmpty)
+        ? '127.0.0.1'
+        : rawBindHost;
+
+    final rawDestHost = (args['destHost'] as String?)?.trim();
+    final destHost = (rawDestHost == null || rawDestHost.isEmpty)
+        ? '127.0.0.1'
+        : rawDestHost;
+    final destPort = (args['destPort'] as num?)?.toInt() ?? 0;
+    if (kind != ForwardKind.dynamic && (destPort < 1 || destPort > 65535)) {
+      throw McpToolError(
+        'INVALID_ARGS',
+        'Parameter "destPort" must be an integer between 1 and 65535 for ${kind.name} forwards.',
+      );
+    }
+
+    final label = (args['label'] as String?)?.trim() ?? '';
+    final summary = kind == ForwardKind.dynamic
+        ? 'Create dynamic SOCKS forward on $bindHost:$bindPort via ${h.title}'
+        : 'Create ${kind.name} forward $bindHost:$bindPort -> $destHost:$destPort via ${h.title}';
+    await _requireConsentForTarget(agent, 'create_port_forward', h.title, summary);
+
+    final forward = PortForward(
+      label: label,
+      kind: kind,
+      hostId: h.id,
+      bindHost: bindHost,
+      bindPort: bindPort,
+      destHost: kind == ForwardKind.dynamic ? '' : destHost,
+      destPort: kind == ForwardKind.dynamic ? 0 : destPort,
+    );
+    v.data.forwards.put(forward);
+    await v.commit();
+    return {
+      'id': forward.id,
+      'vaultId': v.info.id,
+      'label': forward.label,
+      'kind': forward.kind.name,
+      'hostId': forward.hostId,
+      'bindHost': forward.bindHost,
+      'bindPort': forward.bindPort,
+      'destHost': forward.destHost,
+      'destPort': forward.destPort,
+    };
   }
 
   Prompter _prompter() => prompterFactory?.call() ?? McpPrompter();
