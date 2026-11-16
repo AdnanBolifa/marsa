@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../core/vault.dart';
 import '../ssh/connector.dart';
+import '../ssh/sessions.dart';
 import 'audit.dart';
 import 'auth.dart';
 import 'executions.dart';
@@ -48,6 +49,7 @@ class McpService extends ChangeNotifier {
   late final McpHttpServer httpServer;
 
   final Map<String, VaultSession> _vaults = {};
+  final Map<String, Workspace> _workspaces = {};
   String? lastError;
 
   bool get isRunning => httpServer.isRunning;
@@ -63,6 +65,28 @@ class McpService extends ChangeNotifier {
   void attachVault(VaultSession vault) {
     _vaults[vault.info.id] = vault;
     notifyListeners();
+  }
+
+  void attachWorkspace(Workspace workspace) {
+    _workspaces[workspace.vault.info.id] = workspace;
+    registry.agentTerminalOpener = (vault, host, {agentName, newSession = false}) {
+      final ws = _workspaces[vault.info.id];
+      if (ws == null) {
+        throw StateError('No active workspace for vault ${vault.info.name}');
+      }
+      return ws.openAgentTerminal(
+        host,
+        agentName: agentName,
+        newSession: newSession,
+      );
+    };
+  }
+
+  void detachWorkspace(Workspace workspace) {
+    _workspaces.remove(workspace.vault.info.id);
+    if (_workspaces.isEmpty) {
+      registry.agentTerminalOpener = null;
+    }
   }
 
   Future<void> detachVault(String vaultId) async {

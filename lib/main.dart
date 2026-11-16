@@ -93,6 +93,9 @@ class _MarsaAppState extends State<MarsaApp> {
     if (ws != null) {
       await widget.mcpService?.detachVault(ws.vault.info.id);
     }
+    if (ws != null) {
+      widget.mcpService?.detachWorkspace(ws);
+    }
     await ws?.shutdown();
     ws?.dispose();
   }
@@ -113,13 +116,13 @@ class _MarsaAppState extends State<MarsaApp> {
               autoUnlock: _launch,
               onUnlocked: (vault) {
                 widget.mcpService?.attachVault(vault);
-                setState(
-                  () => _workspace = Workspace(
-                    vault,
-                    DialogPrompter(),
-                    device: DeviceIdentity.current,
-                  )..startDevices(),
-                );
+                final ws = Workspace(
+                  vault,
+                  DialogPrompter(),
+                  device: DeviceIdentity.current,
+                )..startDevices();
+                widget.mcpService?.attachWorkspace(ws);
+                setState(() => _workspace = ws);
               },
             )
           : AppShell(

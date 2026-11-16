@@ -18,6 +18,66 @@ import 'forwarding.dart';
 
 enum TabState { connecting, connected, closed }
 
+class CommandResult {
+  const CommandResult({required this.output, required this.exitCode});
+  final String output;
+  final int exitCode;
+}
+
+class _PendingRun {
+  _PendingRun({
+    required this.command,
+    required this.marker,
+    required this.completer,
+    this.onChunk,
+  });
+
+  final String command;
+  final String marker;
+  final Completer<CommandResult> completer;
+  final void Function(String chunk)? onChunk;
+  final StringBuffer raw = StringBuffer();
+}
+
+final _ansiEscape = RegExp(
+  r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])',
+);
+
+/// Strips ANSI escapes, the PTY-echoed command/marker lines, and extracts the
+/// exit code emitted by `printf "\n<marker>:%d\n" $?`.
+@visibleForTesting
+CommandResult? tryParseCommandMarker(
+  String raw,
+  String command,
+  String marker,
+) {
+  final normalized = raw.replaceAll(_ansiEscape, '').replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+  final markerRe = RegExp('${RegExp.escape(marker)}:(\\d+)');
+  final match = markerRe.firstMatch(normalized);
+  if (match == null) return null;
+
+  final exitCode = int.parse(match.group(1)!);
+  var body = normalized.substring(0, match.start);
+
+  // Strip the echoed `printf ...` line if present at the end of body.
+  final lines = body.split('\n');
+  while (lines.isNotEmpty &&
+      (lines.last.trim().isEmpty ||
+          lines.last.contains(marker) ||
+          lines.last.contains('printf '))) {
+    lines.removeLast();
+  }
+  // Strip the echoed command line at the start if present.
+  final firstCmdLine = command.split('\n').first.trim();
+  if (lines.isNotEmpty &&
+      firstCmdLine.isNotEmpty &&
+      lines.first.trim().endsWith(firstCmdLine)) {
+    lines.removeAt(0);
+  }
+  body = lines.join('\n');
+  return CommandResult(output: body, exitCode: exitCode);
+}
+
 abstract class AppTab extends ChangeNotifier {
   AppTab(this.host);
   final Host host;
@@ -44,7 +104,14 @@ abstract class AppTab extends ChangeNotifier {
 }
 
 class TerminalTab extends AppTab {
-  TerminalTab(super.host, this._vault, this._ui) {
+  TerminalTab(
+    super.host,
+    this._vault,
+    this._ui, {
+    this.isAgent = false,
+    this.agentName,
+    Future<Connection> Function(VaultSession, Host, Prompter)? connector,
+  }) : _connector = connector ?? connect {
     terminal.onOutput = (data) {
       final shell = _shell;
       if (shell != null) return shell.write(utf8.encode(data));
@@ -56,6 +123,9 @@ class TerminalTab extends AppTab {
 
   final VaultSession _vault;
   final Prompter _ui;
+  final bool isAgent;
+  final String? agentName;
+  final Future<Connection> Function(VaultSession, Host, Prompter) _connector;
   final terminal = Terminal(maxLines: 10000);
   final controller = TerminalController();
 
@@ -63,27 +133,49 @@ class TerminalTab extends AppTab {
   final focusNode = FocusNode();
   Connection? _conn;
   SSHSession? _shell;
+  Completer<void>? _ready;
+  _PendingRun? _activeRun;
+  Future<void> _queue = Future<void>.value();
+  static int _markerSeq = 0;
 
   @override
   Future<void> start() async {
     close();
+    final ready = _ready = Completer<void>();
     _set(TabState.connecting);
     terminal.write('Connecting to ${host.address}:${host.port}…\r\n');
     try {
-      final conn = _conn = await connect(_vault, host, _ui);
+      final conn = _conn = await _connector(_vault, host, _ui);
       final shell = _shell = await conn.client.shell(
         pty: SSHPtyConfig(
           width: terminal.viewWidth,
           height: terminal.viewHeight,
         ),
       );
-      if (_disposed) return close();
+      if (_disposed) {
+        if (!ready.isCompleted) {
+          ready.completeError(StateError('Terminal session closed'));
+        }
+        return close();
+      }
       // Clear the "Connecting…" line so the remote banner starts clean.
       terminal.write('\x1b[2J\x1b[H');
       _set(TabState.connected);
+      if (!ready.isCompleted) ready.complete();
       const decoder = Utf8Decoder(allowMalformed: true);
-      shell.stdout.cast<List<int>>().transform(decoder).listen(terminal.write);
-      shell.stderr.cast<List<int>>().transform(decoder).listen(terminal.write);
+      void handleText(String text) {
+        terminal.write(text);
+        _onShellOutput(text);
+      }
+
+      shell.stdout
+          .cast<List<int>>()
+          .transform(decoder)
+          .listen(handleText);
+      shell.stderr
+          .cast<List<int>>()
+          .transform(decoder)
+          .listen(handleText);
       unawaited(
         shell.done.catchError((_) {}).whenComplete(() {
           if (_shell != shell) return;
@@ -95,11 +187,97 @@ class TerminalTab extends AppTab {
         }),
       );
     } catch (e) {
+      if (!ready.isCompleted) ready.completeError(e);
       close();
       terminal.write('\x1b[31m$e\x1b[0m\r\n');
       terminal.write('\x1b[2m[press Enter to reconnect]\x1b[0m\r\n');
       _set(TabState.closed, e.toString());
     }
+  }
+
+  void _onShellOutput(String text) {
+    final run = _activeRun;
+    if (run == null || run.completer.isCompleted) return;
+    run.raw.write(text);
+    final parsed = tryParseCommandMarker(
+      run.raw.toString(),
+      run.command,
+      run.marker,
+    );
+    if (parsed != null) {
+      _activeRun = null;
+      run.completer.complete(parsed);
+      return;
+    }
+    // Stream incremental text that does not contain the internal marker.
+    if (!text.contains(run.marker)) {
+      run.onChunk?.call(text);
+    }
+  }
+
+  /// Sends Ctrl-C (`ETX`) to interrupt a running foreground command.
+  void sendCtrlC() {
+    _shell?.write(Uint8List.fromList(const [3]));
+  }
+
+  /// Queues [command] in this shared shell, waits for its completion marker,
+  /// and returns its captured output and exit code. Never silently reconnects.
+  Future<CommandResult> run(
+    String command, {
+    Duration timeout = const Duration(seconds: 30),
+    void Function(String chunk)? onChunk,
+  }) {
+    final prev = _queue;
+    final done = Completer<void>();
+    _queue = done.future;
+
+    return prev.then((_) async {
+      try {
+        if (_disposed || state == TabState.closed) {
+          throw StateError('Terminal session closed');
+        }
+        if (state == TabState.connecting) {
+          final ready = _ready;
+          if (ready == null) {
+            throw StateError('Terminal session closed');
+          }
+          await ready.future;
+        }
+        final shell = _shell;
+        if (_disposed || state != TabState.connected || shell == null) {
+          throw StateError('Terminal session closed');
+        }
+
+        final marker =
+            '__MARSA_END_${++_markerSeq}_${DateTime.now().microsecondsSinceEpoch}__';
+        final completer = Completer<CommandResult>();
+        final pending = _PendingRun(
+          command: command,
+          marker: marker,
+          completer: completer,
+          onChunk: onChunk,
+        );
+        _activeRun = pending;
+
+        send('$command\nprintf "\\n$marker:%d\\n" \$?\n');
+
+        return await completer.future.timeout(
+          timeout,
+          onTimeout: () {
+            if (_activeRun == pending) {
+              _activeRun = null;
+            }
+            sendCtrlC();
+            throw TimeoutException(
+              'Command timed out after ${timeout.inSeconds}s',
+              timeout,
+            );
+          },
+        );
+      } finally {
+        if (!done.isCompleted) done.complete();
+      }
+    });
   }
 
   /// Types [text] into the session, as if pasted.
@@ -114,6 +292,16 @@ class TerminalTab extends AppTab {
 
   @override
   void close() {
+    final ready = _ready;
+    if (ready != null && !ready.isCompleted) {
+      ready.completeError(StateError('Terminal session closed'));
+    }
+    _ready = null;
+    final pending = _activeRun;
+    _activeRun = null;
+    if (pending != null && !pending.completer.isCompleted) {
+      pending.completer.completeError(StateError('Terminal session closed'));
+    }
     _shell = null;
     _conn?.close();
     _conn = null;
@@ -439,6 +627,29 @@ class Workspace extends ChangeNotifier {
 
   void openTerminal(Host h) => _open(TerminalTab(h, vault, ui));
   void openSftp(Host h) => _open(SftpTab(h, vault, ui, local: localFiles));
+
+  /// Opens or reuses a persistent agent [TerminalTab] for [h].
+  TerminalTab openAgentTerminal(
+    Host h, {
+    String? agentName,
+    bool newSession = false,
+  }) {
+    if (!newSession) {
+      for (final tab in tabs) {
+        if (tab is TerminalTab &&
+            tab.isAgent &&
+            tab.host.id == h.id &&
+            tab.state != TabState.closed &&
+            !tab._disposed) {
+          focus(tab);
+          return tab;
+        }
+      }
+    }
+    final tab = TerminalTab(h, vault, ui, isAgent: true, agentName: agentName);
+    _open(tab);
+    return tab;
+  }
 
   void closeTab(AppTab tab) {
     final page = _pageOf(tab);

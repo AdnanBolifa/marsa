@@ -615,6 +615,24 @@ class _Tab extends StatelessWidget {
                 ),
               ),
             ),
+            if (tab is TerminalTab && (tab as TerminalTab).isAgent) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: scheme.primary.withValues(alpha: .16),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'Agent',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.primary,
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(width: 6),
             Tooltip(
               message: 'Close',

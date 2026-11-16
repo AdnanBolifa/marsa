@@ -7,6 +7,7 @@ import '../core/vault.dart';
 import '../ssh/connector.dart';
 import '../ssh/file_sync.dart';
 import '../ssh/files.dart';
+import '../ssh/sessions.dart';
 import 'audit.dart';
 import 'auth.dart';
 import 'executions.dart';
@@ -17,6 +18,13 @@ typedef SshConnectorFn = Future<Connection> Function(
   Host host,
   Prompter ui,
 );
+
+typedef AgentTerminalOpenerFn = TerminalTab Function(
+  VaultSession vault,
+  Host host, {
+  String? agentName,
+  bool newSession,
+});
 
 class McpToolError implements Exception {
   McpToolError(this.code, this.message);
@@ -55,6 +63,7 @@ class McpToolRegistry {
     required this.vaultsProvider,
     this.executions,
     this.connector = connect,
+    this.agentTerminalOpener,
     this.onConsent,
     this.prompterFactory,
   });
@@ -64,6 +73,7 @@ class McpToolRegistry {
   final List<VaultSession> Function() vaultsProvider;
   final McpExecutionTracker? executions;
   final SshConnectorFn connector;
+  AgentTerminalOpenerFn? agentTerminalOpener;
   McpConsentCallback? onConsent;
   Prompter Function()? prompterFactory;
 
@@ -194,6 +204,11 @@ class McpToolRegistry {
           'maxOutputBytes': {
             'type': 'integer',
             'description': 'Max stdout/stderr bytes (default 65536)',
+          },
+          'newSession': {
+            'type': 'boolean',
+            'description':
+                'Open a fresh shared terminal tab instead of reusing the current one',
           },
         },
         'required': ['hostId', 'command'],
@@ -898,6 +913,94 @@ class McpToolRegistry {
       hostLabel: host.title,
       command: command,
     );
+
+    final opener = agentTerminalOpener;
+    if (opener != null) {
+      final newSession = args['newSession'] as bool? ?? false;
+      final tab = opener(
+        vault,
+        host,
+        agentName: agent.name,
+        newSession: newSession,
+      );
+      if (exec != null) {
+        executions?.attachKillHandler(exec.id, () async {
+          tab.sendCtrlC();
+        });
+      }
+      try {
+        final result = await tab.run(
+          command,
+          timeout: Duration(seconds: timeoutSec),
+          onChunk: exec == null
+              ? null
+              : (chunk) => executions?.appendStdout(exec.id, chunk),
+        );
+        if (exec != null && exec.status == McpExecutionStatus.killed) {
+          throw McpToolError('CANCELLED', 'Execution stopped by user');
+        }
+        var out = result.output;
+        var truncated = false;
+        final encoded = utf8.encode(out);
+        if (encoded.length > maxBytes) {
+          out = utf8.decode(
+            encoded.sublist(0, maxBytes),
+            allowMalformed: true,
+          );
+          truncated = true;
+        }
+        if (exec != null) {
+          await executions?.finish(
+            exec.id,
+            status: result.exitCode == 0
+                ? McpExecutionStatus.ok
+                : McpExecutionStatus.error,
+            exitCode: result.exitCode,
+            truncated: truncated,
+          );
+        }
+        return {
+          'hostId': host.id,
+          'exitCode': result.exitCode,
+          'stdout': out,
+          'stderr': '',
+          'truncated': truncated,
+          'sharedTerminal': true,
+        };
+      } on TimeoutException {
+        if (exec != null) {
+          await executions?.finish(
+            exec.id,
+            status: McpExecutionStatus.timeout,
+            errorMessage: 'Command timed out after ${timeoutSec}s',
+          );
+        }
+        throw McpToolError(
+          'TIMEOUT',
+          'Command timed out after ${timeoutSec}s on ${host.title}',
+        );
+      } on StateError catch (e) {
+        if (exec != null) {
+          await executions?.finish(
+            exec.id,
+            status: McpExecutionStatus.error,
+            errorMessage: e.message,
+          );
+        }
+        throw McpToolError('SESSION_CLOSED', e.message);
+      } catch (e) {
+        if (exec != null) {
+          await executions?.finish(
+            exec.id,
+            status: exec.status == McpExecutionStatus.killed
+                ? McpExecutionStatus.killed
+                : McpExecutionStatus.error,
+            errorMessage: e.toString(),
+          );
+        }
+        rethrow;
+      }
+    }
 
     Connection? conn;
     try {
