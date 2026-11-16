@@ -54,16 +54,16 @@ class McpSettingsSection extends StatelessWidget {
     final nameCtrl = TextEditingController(text: 'AI Agent');
     final pathsCtrl = TextEditingController();
     var tier = McpPermissionTier.discover;
-    var requireApproval = true;
+    var policy = McpExecutionPolicy.ask;
 
-    final created =
-        await showDialog<(String, McpPermissionTier, bool, List<String>)?>(
+    final created = await showDialog<
+        (String, McpPermissionTier, McpExecutionPolicy, List<String>)?>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) => AlertDialog(
           title: const Text('New agent token'),
           content: SizedBox(
-            width: 420,
+            width: 440,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -71,7 +71,10 @@ class McpSettingsSection extends StatelessWidget {
                 TextField(
                   controller: nameCtrl,
                   autofocus: true,
-                  decoration: const InputDecoration(labelText: 'Agent name'),
+                  decoration: const InputDecoration(
+                    labelText: 'Token name',
+                    hintText: 'e.g. Claude Desktop, Cursor, CI Bot',
+                  ),
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<McpPermissionTier>(
@@ -95,15 +98,45 @@ class McpSettingsSection extends StatelessWidget {
                     hintText: '/Users/you/Projects, /tmp/deploy',
                   ),
                 ),
-                const SizedBox(height: 12),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Require approval per execution'),
-                  subtitle: const Text(
-                    'Prompt before running ssh_exec or SFTP tools',
+                const SizedBox(height: 16),
+                Text(
+                  'Execution level',
+                  style: Theme.of(ctx).textTheme.labelMedium,
+                ),
+                const SizedBox(height: 6),
+                SegmentedButton<McpExecutionPolicy>(
+                  segments: const [
+                    ButtonSegment(
+                      value: McpExecutionPolicy.deny,
+                      label: Text('Deny'),
+                    ),
+                    ButtonSegment(
+                      value: McpExecutionPolicy.ask,
+                      label: Text('Ask'),
+                    ),
+                    ButtonSegment(
+                      value: McpExecutionPolicy.autoApprove,
+                      label: Text('Auto approve'),
+                    ),
+                  ],
+                  selected: {policy},
+                  onSelectionChanged: (s) => setState(() => policy = s.first),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  switch (policy) {
+                    McpExecutionPolicy.deny =>
+                      'Blocks ssh_exec, SFTP, and vault write operations.',
+                    McpExecutionPolicy.ask =>
+                      'Prompts you to approve each execution or write.',
+                    McpExecutionPolicy.autoApprove =>
+                      'Warning: runs allowed tools automatically without prompting.',
+                  },
+                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                    color: policy == McpExecutionPolicy.autoApprove
+                        ? Theme.of(ctx).colorScheme.error
+                        : Theme.of(ctx).colorScheme.onSurfaceVariant,
                   ),
-                  value: requireApproval,
-                  onChanged: (v) => setState(() => requireApproval = v),
                 ),
               ],
             ),
@@ -122,7 +155,7 @@ class McpSettingsSection extends StatelessWidget {
                     .toList();
                 Navigator.pop(
                   ctx,
-                  (nameCtrl.text, tier, requireApproval, paths),
+                  (nameCtrl.text, tier, policy, paths),
                 );
               },
               child: const Text('Create'),
@@ -138,7 +171,7 @@ class McpSettingsSection extends StatelessWidget {
     final (profile, rawToken) = await mcpService.tokenStore.createToken(
       name: created.$1,
       tier: created.$2,
-      requireApproval: created.$3,
+      executionPolicy: created.$3,
       allowedLocalPaths: created.$4,
     );
     if (!context.mounted) return;
@@ -186,6 +219,93 @@ class McpSettingsSection extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _editToken(BuildContext context, McpAgentToken token) async {
+    final nameCtrl = TextEditingController(text: token.name);
+    var tier = token.tier;
+    var policy = token.executionPolicy;
+
+    final updated =
+        await showDialog<(String, McpPermissionTier, McpExecutionPolicy)?>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: Text('Edit "${token.name}"'),
+          content: SizedBox(
+            width: 440,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Token name'),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<McpPermissionTier>(
+                  initialValue: tier,
+                  decoration: const InputDecoration(
+                    labelText: 'Permission tier',
+                  ),
+                  items: [
+                    for (final t in McpPermissionTier.values)
+                      DropdownMenuItem(value: t, child: Text(t.label)),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setState(() => tier = v);
+                  },
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Execution level',
+                  style: Theme.of(ctx).textTheme.labelMedium,
+                ),
+                const SizedBox(height: 6),
+                SegmentedButton<McpExecutionPolicy>(
+                  segments: const [
+                    ButtonSegment(
+                      value: McpExecutionPolicy.deny,
+                      label: Text('Deny'),
+                    ),
+                    ButtonSegment(
+                      value: McpExecutionPolicy.ask,
+                      label: Text('Ask'),
+                    ),
+                    ButtonSegment(
+                      value: McpExecutionPolicy.autoApprove,
+                      label: Text('Auto approve'),
+                    ),
+                  ],
+                  selected: {policy},
+                  onSelectionChanged: (s) => setState(() => policy = s.first),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(ctx, (nameCtrl.text, tier, policy)),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    nameCtrl.dispose();
+    if (updated == null) return;
+    await mcpService.tokenStore.updateToken(
+      token.id,
+      name: updated.$1,
+      tier: updated.$2,
+      executionPolicy: updated.$3,
     );
   }
 
@@ -375,11 +495,20 @@ class McpSettingsSection extends StatelessWidget {
                     const Divider(height: 1),
                     row(
                       tk.name,
-                      '${tk.tier.label}'
-                          '${tk.requireApproval ? ' · asks approval' : ''}',
-                      OutlinedButton(
-                        onPressed: () => mcpService.tokenStore.revoke(tk.id),
-                        child: const Text('Revoke'),
+                      '${tk.tier.label} · ${tk.executionPolicy.label}',
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton(
+                            onPressed: () => _editToken(context, tk),
+                            child: const Text('Edit'),
+                          ),
+                          const SizedBox(width: 4),
+                          OutlinedButton(
+                            onPressed: () => mcpService.tokenStore.revoke(tk.id),
+                            child: const Text('Revoke'),
+                          ),
+                        ],
                       ),
                     ),
                   ],

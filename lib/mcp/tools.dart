@@ -693,7 +693,17 @@ class McpToolRegistry {
     String targetLabel,
     String summary,
   ) async {
-    if (!agent.requireApproval) return;
+    switch (agent.executionPolicy) {
+      case McpExecutionPolicy.deny:
+        throw McpToolError(
+          'POLICY_DENIED',
+          'Execution policy for agent "${agent.name}" denies "$toolName" on "$targetLabel".',
+        );
+      case McpExecutionPolicy.autoApprove:
+        return;
+      case McpExecutionPolicy.ask:
+        break;
+    }
     final cb = onConsent;
     if (cb == null) {
       throw McpToolError(

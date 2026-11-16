@@ -34,6 +34,17 @@ extension McpPermissionTierX on McpPermissionTier {
   bool allows(McpPermissionTier required) => index >= required.index;
 }
 
+/// How interactive approval is handled for execution tools on an agent token.
+enum McpExecutionPolicy { deny, ask, autoApprove }
+
+extension McpExecutionPolicyX on McpExecutionPolicy {
+  String get label => switch (this) {
+    McpExecutionPolicy.deny => 'Deny',
+    McpExecutionPolicy.ask => 'Ask',
+    McpExecutionPolicy.autoApprove => 'Auto approve',
+  };
+}
+
 /// A device-local AI agent token profile. Never synced inside vaults.
 class McpAgentToken {
   McpAgentToken({
@@ -45,28 +56,48 @@ class McpAgentToken {
     this.allowedHostIds = const [],
     this.allowedGroups = const [],
     this.allowedLocalPaths = const [],
-    this.requireApproval = true,
+    McpExecutionPolicy? executionPolicy,
+    bool? requireApproval,
     required this.createdAt,
     this.revokedAt,
-  });
+  }) : executionPolicy =
+           executionPolicy ??
+           (requireApproval == false
+               ? McpExecutionPolicy.autoApprove
+               : McpExecutionPolicy.ask);
 
-  factory McpAgentToken.fromJson(Map<String, dynamic> j) => McpAgentToken(
-    id: j['id'] as String,
-    name: j['name'] as String? ?? 'Agent',
-    tokenHash: j['tokenHash'] as String,
-    tier: McpPermissionTier.values.firstWhere(
-      (t) => t.name == j['tier'],
-      orElse: () => McpPermissionTier.discover,
-    ),
-    allowedVaultIds: (j['allowedVaultIds'] as List? ?? const []).cast<String>(),
-    allowedHostIds: (j['allowedHostIds'] as List? ?? const []).cast<String>(),
-    allowedGroups: (j['allowedGroups'] as List? ?? const []).cast<String>(),
-    allowedLocalPaths:
-        (j['allowedLocalPaths'] as List? ?? const []).cast<String>(),
-    requireApproval: j['requireApproval'] as bool? ?? true,
-    createdAt: j['createdAt'] as int? ?? 0,
-    revokedAt: j['revokedAt'] as int?,
-  );
+  factory McpAgentToken.fromJson(Map<String, dynamic> j) {
+    final rawPolicy = j['executionPolicy'] as String?;
+    final McpExecutionPolicy policy;
+    if (rawPolicy != null) {
+      policy = McpExecutionPolicy.values.firstWhere(
+        (p) => p.name == rawPolicy,
+        orElse: () => McpExecutionPolicy.ask,
+      );
+    } else {
+      policy = (j['requireApproval'] as bool? ?? true)
+          ? McpExecutionPolicy.ask
+          : McpExecutionPolicy.autoApprove;
+    }
+    return McpAgentToken(
+      id: j['id'] as String,
+      name: j['name'] as String? ?? 'Agent',
+      tokenHash: j['tokenHash'] as String,
+      tier: McpPermissionTier.values.firstWhere(
+        (t) => t.name == j['tier'],
+        orElse: () => McpPermissionTier.discover,
+      ),
+      allowedVaultIds:
+          (j['allowedVaultIds'] as List? ?? const []).cast<String>(),
+      allowedHostIds: (j['allowedHostIds'] as List? ?? const []).cast<String>(),
+      allowedGroups: (j['allowedGroups'] as List? ?? const []).cast<String>(),
+      allowedLocalPaths:
+          (j['allowedLocalPaths'] as List? ?? const []).cast<String>(),
+      executionPolicy: policy,
+      createdAt: j['createdAt'] as int? ?? 0,
+      revokedAt: j['revokedAt'] as int?,
+    );
+  }
 
   final String id;
   String name;
@@ -76,9 +107,13 @@ class McpAgentToken {
   List<String> allowedHostIds;
   List<String> allowedGroups;
   List<String> allowedLocalPaths;
-  bool requireApproval;
+  McpExecutionPolicy executionPolicy;
   final int createdAt;
   int? revokedAt;
+
+  bool get requireApproval => executionPolicy == McpExecutionPolicy.ask;
+  set requireApproval(bool value) => executionPolicy =
+      value ? McpExecutionPolicy.ask : McpExecutionPolicy.autoApprove;
 
   bool get isRevoked => revokedAt != null;
 
@@ -91,6 +126,7 @@ class McpAgentToken {
     'allowedHostIds': allowedHostIds,
     'allowedGroups': allowedGroups,
     'allowedLocalPaths': allowedLocalPaths,
+    'executionPolicy': executionPolicy.name,
     'requireApproval': requireApproval,
     'createdAt': createdAt,
     if (revokedAt != null) 'revokedAt': revokedAt,
@@ -157,7 +193,8 @@ class McpTokenStore extends ChangeNotifier {
     List<String> allowedHostIds = const [],
     List<String> allowedGroups = const [],
     List<String> allowedLocalPaths = const [],
-    bool requireApproval = true,
+    McpExecutionPolicy? executionPolicy,
+    bool? requireApproval,
   }) async {
     final raw = _randomToken();
     final profile = McpAgentToken(
@@ -169,6 +206,7 @@ class McpTokenStore extends ChangeNotifier {
       allowedHostIds: List.unmodifiable(allowedHostIds),
       allowedGroups: List.unmodifiable(allowedGroups),
       allowedLocalPaths: List.unmodifiable(allowedLocalPaths),
+      executionPolicy: executionPolicy,
       requireApproval: requireApproval,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -216,6 +254,28 @@ class McpTokenStore extends ChangeNotifier {
     final idx = tokens.indexWhere((t) => t.id == id);
     if (idx < 0) return;
     tokens[idx].requireApproval = requireApproval;
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> updateToken(
+    String id, {
+    String? name,
+    McpPermissionTier? tier,
+    McpExecutionPolicy? executionPolicy,
+  }) async {
+    final idx = tokens.indexWhere((t) => t.id == id);
+    if (idx < 0) return;
+    final tk = tokens[idx];
+    if (name != null && name.trim().isNotEmpty) {
+      tk.name = name.trim();
+    }
+    if (tier != null) {
+      tk.tier = tier;
+    }
+    if (executionPolicy != null) {
+      tk.executionPolicy = executionPolicy;
+    }
     await _save();
     notifyListeners();
   }
