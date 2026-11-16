@@ -310,69 +310,111 @@ class McpSettingsSection extends StatelessWidget {
   }
 
   Future<void> _showAuditLog(BuildContext context) async {
+    var groupBy = 'all'; // 'all' | 'token' | 'host'
     await showDialog<void>(
       context: context,
-      builder: (ctx) => ListenableBuilder(
-        listenable: mcpService.auditLog,
-        builder: (ctx, _) {
-          final entries = mcpService.auditLog.entries.reversed.toList();
-          return AlertDialog(
-            title: const Text('MCP Audit Log'),
-            content: SizedBox(
-              width: 640,
-              height: 400,
-              child: entries.isEmpty
-                  ? const Center(child: Text('No MCP agent activity recorded yet.'))
-                  : ListView.separated(
-                      itemCount: entries.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (_, i) {
-                        final e = entries[i];
-                        final dt = DateTime.fromMillisecondsSinceEpoch(
-                          e.timestamp,
-                        ).toLocal();
-                        final time =
-                            '${dt.hour.toString().padLeft(2, '0')}:'
-                            '${dt.minute.toString().padLeft(2, '0')}:'
-                            '${dt.second.toString().padLeft(2, '0')}';
-                        return ListTile(
-                          dense: true,
-                          title: Text(
-                            '${e.agentName} · ${e.toolName}'
-                            '${e.hostLabel == null ? '' : ' (${e.hostLabel})'}',
-                          ),
-                          subtitle: Text(
-                            [
-                              '$time · ${e.status.name} · ${e.durationMs}ms',
-                              if (e.detail != null) e.detail!,
-                            ].join(' — '),
-                          ),
-                        );
-                      },
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => ListenableBuilder(
+          listenable: mcpService.auditLog,
+          builder: (ctx, _) {
+            final entries = mcpService.auditLog.entries.reversed.toList();
+
+            Widget buildTile(dynamic e) {
+              final dt = DateTime.fromMillisecondsSinceEpoch(
+                e.timestamp,
+              ).toLocal();
+              final time =
+                  '${dt.hour.toString().padLeft(2, '0')}:'
+                  '${dt.minute.toString().padLeft(2, '0')}:'
+                  '${dt.second.toString().padLeft(2, '0')}';
+              return ListTile(
+                dense: true,
+                title: Text(
+                  '${e.agentName} · ${e.toolName}'
+                  '${e.hostLabel == null ? '' : ' (${e.hostLabel})'}',
+                ),
+                subtitle: Text(
+                  [
+                    '$time · ${e.status.name} · ${e.durationMs}ms',
+                    if (e.detail != null) e.detail!,
+                  ].join(' — '),
+                ),
+              );
+            }
+
+            Widget body;
+            if (entries.isEmpty) {
+              body = const Center(
+                child: Text('No MCP agent activity recorded yet.'),
+              );
+            } else if (groupBy == 'all') {
+              body = ListView.separated(
+                itemCount: entries.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (_, i) => buildTile(entries[i]),
+              );
+            } else {
+              final groups = <String, List<dynamic>>{};
+              for (final e in entries) {
+                final key = groupBy == 'token'
+                    ? '${e.agentName} (${e.agentId})'
+                    : (e.hostLabel ?? 'Vault / Global');
+                groups.putIfAbsent(key, () => []).add(e);
+              }
+              body = ListView(
+                children: [
+                  for (final g in groups.entries)
+                    ExpansionTile(
+                      initiallyExpanded: true,
+                      title: Text('${g.key} (${g.value.length})'),
+                      children: [
+                        for (final e in g.value) buildTile(e),
+                      ],
                     ),
-            ),
-            actions: [
-              if (entries.isNotEmpty)
-                OutlinedButton(
-                  onPressed: () => copyText(
-                    ctx,
-                    mcpService.auditLog.exportJson(),
-                    'Audit log JSON',
+                ],
+              );
+            }
+
+            return AlertDialog(
+              title: Row(
+                children: [
+                  const Expanded(child: Text('MCP Audit Log')),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'all', label: Text('All')),
+                      ButtonSegment(value: 'token', label: Text('By token')),
+                      ButtonSegment(value: 'host', label: Text('By host')),
+                    ],
+                    selected: {groupBy},
+                    onSelectionChanged: (s) =>
+                        setState(() => groupBy = s.first),
                   ),
-                  child: const Text('Copy JSON'),
-                ),
-              if (entries.isNotEmpty)
-                OutlinedButton(
-                  onPressed: mcpService.auditLog.clear,
-                  child: const Text('Clear'),
-                ),
-              FilledButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Close'),
+                ],
               ),
-            ],
-          );
-        },
+              content: SizedBox(width: 680, height: 420, child: body),
+              actions: [
+                if (entries.isNotEmpty)
+                  OutlinedButton(
+                    onPressed: () => copyText(
+                      ctx,
+                      mcpService.auditLog.exportJson(),
+                      'Audit log JSON',
+                    ),
+                    child: const Text('Copy JSON'),
+                  ),
+                if (entries.isNotEmpty)
+                  OutlinedButton(
+                    onPressed: mcpService.auditLog.clear,
+                    child: const Text('Clear'),
+                  ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }

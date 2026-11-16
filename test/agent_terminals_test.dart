@@ -74,6 +74,37 @@ void main() {
     expect(tracker.activeCount, 0);
   });
 
+  test('McpExecutionTracker clears history scoped by agent or host', () async {
+    final dir = Directory.systemTemp.createTempSync('marsa_exec_clear_');
+    addTearDown(() => dir.deleteSync(recursive: true));
+
+    final tracker = McpExecutionTracker(
+      file: File('${dir.path}/mcp_executions.jsonl'),
+    );
+    final e1 = tracker.start(
+      agentId: 'a1',
+      agentName: 'Claude',
+      hostId: 'h1',
+      hostLabel: 'app-1',
+      command: 'uptime',
+    );
+    final e2 = tracker.start(
+      agentId: 'a2',
+      agentName: 'Cursor',
+      hostId: 'h2',
+      hostLabel: 'db-1',
+      command: 'whoami',
+    );
+    await tracker.finish(e1.id, status: McpExecutionStatus.ok, exitCode: 0);
+    await tracker.finish(e2.id, status: McpExecutionStatus.ok, exitCode: 0);
+
+    await tracker.clearHistoryForAgent('a1');
+    expect(tracker.history.map((e) => e.id), [e2.id]);
+
+    await tracker.clearHistoryForHost('h2');
+    expect(tracker.history, isEmpty);
+  });
+
   testWidgets('AgentTerminalsPage and AppShell render in wide & narrow layouts', (
     tester,
   ) async {
@@ -135,6 +166,17 @@ void main() {
     expect(find.text('Agent Terminals'), findsWidgets);
     expect(find.text('1 active agent command running'), findsOneWidget);
     expect(find.text('docker ps'), findsWidgets);
+
+    // Switch grouping to By token and By host
+    await tester.tap(find.text('By token'));
+    await tester.pump();
+    expect(find.text('Agent-A'), findsWidgets);
+    expect(find.text('Agent-B'), findsWidgets);
+
+    await tester.tap(find.text('By host'));
+    await tester.pump();
+    expect(find.text('app-1'), findsWidgets);
+    expect(find.text('db-2'), findsWidgets);
 
     // Narrow light layout directly on AgentTerminalsPage
     tester.view.physicalSize = const Size(640, 720);

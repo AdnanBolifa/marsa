@@ -262,6 +262,18 @@ class McpExecutionTracker extends ChangeNotifier {
     await _persist();
   }
 
+  Future<void> clearHistoryForAgent(String agentId) async {
+    _entries.removeWhere((e) => !e.isRunning && e.agentId == agentId);
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> clearHistoryForHost(String hostId) async {
+    _entries.removeWhere((e) => !e.isRunning && e.hostId == hostId);
+    notifyListeners();
+    await _persist();
+  }
+
   Future<void> _persist() async {
     final f = file;
     if (f == null) return;

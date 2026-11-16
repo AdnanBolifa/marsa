@@ -8,6 +8,8 @@ import '../mcp/mcp_service.dart';
 import '../ssh/sessions.dart';
 import 'common.dart';
 
+enum _ExecutionGroupBy { all, byToken, byHost }
+
 class AgentTerminalsPage extends StatefulWidget {
   const AgentTerminalsPage({
     required this.workspace,
@@ -25,6 +27,10 @@ class AgentTerminalsPage extends StatefulWidget {
 class _AgentTerminalsPageState extends State<AgentTerminalsPage> {
   String _query = '';
   McpExecutionStatus? _statusFilter;
+  String? _agentFilter;
+  String? _hostFilter;
+  _ExecutionGroupBy _groupBy = _ExecutionGroupBy.all;
+  final Set<String> _collapsedGroups = {};
   String? _selectedId;
   Timer? _ticker;
 
@@ -75,6 +81,8 @@ class _AgentTerminalsPageState extends State<AgentTerminalsPage> {
     final q = _query.trim().toLowerCase();
     return entries.where((e) {
       if (_statusFilter != null && e.status != _statusFilter) return false;
+      if (_agentFilter != null && e.agentId != _agentFilter) return false;
+      if (_hostFilter != null && e.hostId != _hostFilter) return false;
       if (q.isEmpty) return true;
       return e.command.toLowerCase().contains(q) ||
           e.hostLabel.toLowerCase().contains(q) ||
@@ -167,6 +175,15 @@ class _AgentTerminalsPageState extends State<AgentTerminalsPage> {
           ],
         ),
         if (active.isNotEmpty) _ActiveBanner(active: active, tracker: tracker),
+        _GroupingToolbar(
+          entries: tracker.all,
+          groupBy: _groupBy,
+          agentFilter: _agentFilter,
+          hostFilter: _hostFilter,
+          onGroupByChanged: (g) => setState(() => _groupBy = g),
+          onAgentChanged: (a) => setState(() => _agentFilter = a),
+          onHostChanged: (h) => setState(() => _hostFilter = h),
+        ),
         Expanded(
           child: entries.isEmpty
               ? EmptyState(
@@ -186,8 +203,18 @@ class _AgentTerminalsPageState extends State<AgentTerminalsPage> {
                       flex: 2,
                       child: _ExecutionList(
                         entries: entries,
+                        groupBy: _groupBy,
+                        collapsedGroups: _collapsedGroups,
                         selectedId: selected?.id,
                         onSelect: (id) => setState(() => _selectedId = id),
+                        onToggleGroup: (key) => setState(() {
+                          if (!_collapsedGroups.remove(key)) {
+                            _collapsedGroups.add(key);
+                          }
+                        }),
+                        onClearGroup: (key) => _groupBy == _ExecutionGroupBy.byToken
+                            ? tracker.clearHistoryForAgent(key)
+                            : tracker.clearHistoryForHost(key),
                         onKill: tracker.kill,
                       ),
                     ),
@@ -210,8 +237,18 @@ class _AgentTerminalsPageState extends State<AgentTerminalsPage> {
                       width: 360,
                       child: _ExecutionList(
                         entries: entries,
+                        groupBy: _groupBy,
+                        collapsedGroups: _collapsedGroups,
                         selectedId: selected?.id,
                         onSelect: (id) => setState(() => _selectedId = id),
+                        onToggleGroup: (key) => setState(() {
+                          if (!_collapsedGroups.remove(key)) {
+                            _collapsedGroups.add(key);
+                          }
+                        }),
+                        onClearGroup: (key) => _groupBy == _ExecutionGroupBy.byToken
+                            ? tracker.clearHistoryForAgent(key)
+                            : tracker.clearHistoryForHost(key),
                         onKill: tracker.kill,
                       ),
                     ),
@@ -278,101 +315,364 @@ class _ActiveBanner extends StatelessWidget {
   }
 }
 
+class _GroupingToolbar extends StatelessWidget {
+  const _GroupingToolbar({
+    required this.entries,
+    required this.groupBy,
+    required this.agentFilter,
+    required this.hostFilter,
+    required this.onGroupByChanged,
+    required this.onAgentChanged,
+    required this.onHostChanged,
+  });
+
+  final List<McpCommandExecution> entries;
+  final _ExecutionGroupBy groupBy;
+  final String? agentFilter;
+  final String? hostFilter;
+  final ValueChanged<_ExecutionGroupBy> onGroupByChanged;
+  final ValueChanged<String?> onAgentChanged;
+  final ValueChanged<String?> onHostChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final agents = <String, String>{};
+    final hosts = <String, String>{};
+    for (final e in entries) {
+      agents.putIfAbsent(e.agentId, () => e.agentName);
+      hosts.putIfAbsent(e.hostId, () => e.hostLabel);
+    }
+    final activeAgent = agents.containsKey(agentFilter) ? agentFilter : null;
+    final activeHost = hosts.containsKey(hostFilter) ? hostFilter : null;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          SegmentedButton<_ExecutionGroupBy>(
+            segments: const [
+              ButtonSegment(value: _ExecutionGroupBy.all, label: Text('All')),
+              ButtonSegment(
+                value: _ExecutionGroupBy.byToken,
+                label: Text('By token'),
+              ),
+              ButtonSegment(
+                value: _ExecutionGroupBy.byHost,
+                label: Text('By host'),
+              ),
+            ],
+            selected: {groupBy},
+            onSelectionChanged: (s) => onGroupByChanged(s.first),
+          ),
+          if (agents.isNotEmpty)
+            DropdownButton<String?>(
+              value: activeAgent,
+              underline: const SizedBox.shrink(),
+              items: [
+                const DropdownMenuItem(value: null, child: Text('All tokens')),
+                for (final a in agents.entries)
+                  DropdownMenuItem(value: a.key, child: Text(a.value)),
+              ],
+              onChanged: onAgentChanged,
+            ),
+          if (hosts.isNotEmpty)
+            DropdownButton<String?>(
+              value: activeHost,
+              underline: const SizedBox.shrink(),
+              items: [
+                const DropdownMenuItem(value: null, child: Text('All hosts')),
+                for (final h in hosts.entries)
+                  DropdownMenuItem(value: h.key, child: Text(h.value)),
+              ],
+              onChanged: onHostChanged,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ExecutionList extends StatelessWidget {
   const _ExecutionList({
     required this.entries,
+    required this.groupBy,
+    required this.collapsedGroups,
     required this.selectedId,
     required this.onSelect,
+    required this.onToggleGroup,
+    required this.onClearGroup,
     required this.onKill,
   });
 
   final List<McpCommandExecution> entries;
+  final _ExecutionGroupBy groupBy;
+  final Set<String> collapsedGroups;
   final String? selectedId;
   final ValueChanged<String> onSelect;
+  final ValueChanged<String> onToggleGroup;
+  final Future<void> Function(String key) onClearGroup;
   final Future<void> Function(String id) onKill;
+
+  @override
+  Widget build(BuildContext context) {
+    if (groupBy == _ExecutionGroupBy.all) {
+      return ListView.separated(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+        itemCount: entries.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 6),
+        itemBuilder: (context, i) => _ExecutionTile(
+          entry: entries[i],
+          selected: entries[i].id == selectedId,
+          onTap: () => onSelect(entries[i].id),
+          onKill: () => onKill(entries[i].id),
+        ),
+      );
+    }
+
+    final groups = <String, List<McpCommandExecution>>{};
+    final labels = <String, String>{};
+    for (final e in entries) {
+      final key = groupBy == _ExecutionGroupBy.byToken ? e.agentId : e.hostId;
+      final label =
+          groupBy == _ExecutionGroupBy.byToken ? e.agentName : e.hostLabel;
+      labels.putIfAbsent(key, () => label);
+      groups.putIfAbsent(key, () => []).add(e);
+    }
+
+    final t = Theme.of(context);
+    final scheme = t.colorScheme;
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+      children: [
+        for (final g in groups.entries) ...[
+          _GroupHeader(
+            label: labels[g.key] ?? g.key,
+            items: g.value,
+            collapsed: collapsedGroups.contains(g.key),
+            onToggle: () => onToggleGroup(g.key),
+            onClear: g.value.any((e) => !e.isRunning)
+                ? () => onClearGroup(g.key)
+                : null,
+            theme: t,
+            scheme: scheme,
+          ),
+          if (!collapsedGroups.contains(g.key))
+            for (final e in g.value)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: _ExecutionTile(
+                  entry: e,
+                  selected: e.id == selectedId,
+                  onTap: () => onSelect(e.id),
+                  onKill: () => onKill(e.id),
+                ),
+              ),
+          const SizedBox(height: 6),
+        ],
+      ],
+    );
+  }
+}
+
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader({
+    required this.label,
+    required this.items,
+    required this.collapsed,
+    required this.onToggle,
+    required this.onClear,
+    required this.theme,
+    required this.scheme,
+  });
+
+  final String label;
+  final List<McpCommandExecution> items;
+  final bool collapsed;
+  final VoidCallback onToggle;
+  final VoidCallback? onClear;
+  final ThemeData theme;
+  final ColorScheme scheme;
+
+  @override
+  Widget build(BuildContext context) {
+    final running = items.where((e) => e.isRunning).length;
+    final failed = items
+        .where(
+          (e) =>
+              e.status == McpExecutionStatus.error ||
+              e.status == McpExecutionStatus.timeout,
+        )
+        .length;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: onToggle,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+        child: Row(
+          children: [
+            Icon(
+              collapsed ? Icons.chevron_right : Icons.expand_more,
+              size: 16,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            if (running > 0)
+              Container(
+                margin: const EdgeInsets.only(right: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: scheme.primary.withValues(alpha: .15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '$running running',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            if (failed > 0)
+              Container(
+                margin: const EdgeInsets.only(right: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: scheme.error.withValues(alpha: .15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '$failed failed',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.error,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            Text(
+              '${items.length}',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            if (onClear != null) ...[
+              const SizedBox(width: 4),
+              InkWell(
+                onTap: onClear,
+                borderRadius: BorderRadius.circular(4),
+                child: Tooltip(
+                  message: 'Clear group history',
+                  child: Icon(
+                    Icons.delete_outline,
+                    size: 15,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ExecutionTile extends StatelessWidget {
+  const _ExecutionTile({
+    required this.entry,
+    required this.selected,
+    required this.onTap,
+    required this.onKill,
+  });
+
+  final McpCommandExecution entry;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onKill;
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
     final scheme = t.colorScheme;
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-      itemCount: entries.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 6),
-      itemBuilder: (context, i) {
-        final e = entries[i];
-        final selected = e.id == selectedId;
-        final color = _statusColor(e.status, scheme);
-        return Material(
-          color: selected
-              ? scheme.surfaceContainerHigh
-              : scheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(8),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: () => onSelect(e.id),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+    final color = _statusColor(entry.status, scheme);
+    return Material(
+      color: selected ? scheme.surfaceContainerHigh : scheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${e.agentName} · ${e.hostLabel}',
-                          overflow: TextOverflow.ellipsis,
-                          style: t.textTheme.labelMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      Text(
-                        _formatDuration(e.duration),
-                        style: mono.copyWith(
-                          fontSize: 11,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                      if (e.isRunning) ...[
-                        const SizedBox(width: 6),
-                        InkWell(
-                          onTap: () => onKill(e.id),
-                          borderRadius: BorderRadius.circular(4),
-                          child: Tooltip(
-                            message: 'Stop execution',
-                            child: Icon(
-                              Icons.stop_circle_outlined,
-                              size: 16,
-                              color: scheme.error,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                    ),
                   ),
-                  const SizedBox(height: 5),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${entry.agentName} · ${entry.hostLabel}',
+                      overflow: TextOverflow.ellipsis,
+                      style: t.textTheme.labelMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
                   Text(
-                    e.command,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: mono.copyWith(fontSize: 12),
+                    _formatDuration(entry.duration),
+                    style: mono.copyWith(
+                      fontSize: 11,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
+                  if (entry.isRunning) ...[
+                    const SizedBox(width: 6),
+                    InkWell(
+                      onTap: onKill,
+                      borderRadius: BorderRadius.circular(4),
+                      child: Tooltip(
+                        message: 'Stop execution',
+                        child: Icon(
+                          Icons.stop_circle_outlined,
+                          size: 16,
+                          color: scheme.error,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
-            ),
+              const SizedBox(height: 5),
+              Text(
+                entry.command,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: mono.copyWith(fontSize: 12),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }
