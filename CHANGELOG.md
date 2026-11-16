@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+### AI Agent Integration (MCP)
+- Kept AI agent terminal tabs open and shared across `ssh_exec` calls via
+  `Workspace.openAgentTerminal` and `TerminalTab.run(...)`, preserving shell
+  state (`cd`, environment variables, virtualenvs) with sequential command
+  queuing, exit-code capture, timeout + Ctrl-C support, and an **Agent** tab
+  badge (`lib/ssh/sessions.dart`, `lib/ui/shell.dart`, `lib/mcp/tools.dart`).
+
 ## 1.2.0
 
 ### AI Agent Integration (MCP)
