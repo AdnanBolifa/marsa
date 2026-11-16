@@ -142,6 +142,7 @@ class TerminalTab extends AppTab {
   Future<void> start() async {
     close();
     final ready = _ready = Completer<void>();
+    ready.future.ignore();
     _set(TabState.connecting);
     terminal.write('Connecting to ${host.address}:${host.port}…\r\n');
     try {
