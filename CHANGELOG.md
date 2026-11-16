@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0
+
+### AI Agent Integration (MCP)
+- Added `create_snippet`, `list_port_forwards`, and `create_port_forward` MCP
+  tools so AI agents can save reusable command snippets and SSH port-forwarding
+  rules (`local`, `remote`, `dynamic`) directly into unlocked vaults.
+- Added token name editing and 3-level execution policies (`Deny`, `Ask`,
+  `Auto approve`) for MCP agent tokens (`lib/mcp/auth.dart`,
+  `lib/ui/mcp_settings.dart`).
+- Added **All / By token / By host** grouping, token/host filters, collapsible
+  group headers, and per-group history clearing in **Agent Terminals** and the
+  MCP Audit Log dialog.
+
 ## 1.1.0
 
 ### AI Agent Integration (MCP)
